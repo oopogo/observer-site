@@ -33,6 +33,9 @@ AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
 CACHE_LOCK = threading.Lock()
 
+NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
+NUDGE_INTERVAL_SECONDS = 900
+
 
 def cache_get(name: str) -> dict[str, Any] | None:
     with CACHE_LOCK:
@@ -308,6 +311,66 @@ def send_recovery_nudge(agent_id: str) -> dict[str, Any]:
     return {"ok": True, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "result": payload, "history": load_history().get(agent_id, [])[-80:]}
 
 
+def load_nudges() -> dict[str, Any]:
+    try:
+        data = json.loads(NUDGE_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_nudges(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    NUDGE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def maybe_auto_nudge(agent: dict[str, Any]) -> None:
+    agent_id = str(agent.get("id") or "")
+    if not agent_id or not agent.get("isLagging"):
+        return
+    now = int(time.time())
+    nudges = load_nudges()
+    last = int(nudges.get(agent_id, 0) or 0)
+    if now - last < NUDGE_INTERVAL_SECONDS:
+        return
+    nudges[agent_id] = now
+    save_nudges(nudges)
+    threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
+
+
+def get_agent_session_detail(agent_id: str) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    summary = summarize_agents()
+    agent = next((a for a in summary.get("agents", []) if a.get("id") == agent_id), None)
+    key = agent.get("latestSessionKey") if agent else f"agent:{agent_id}:observer-site"
+    messages_payload = gateway_call("sessions.get", {"key": key, "limit": 20}, timeout=18)
+    messages = messages_payload.get("messages") if isinstance(messages_payload, dict) else []
+    if not isinstance(messages, list):
+        messages = []
+    compact_messages = []
+    for msg in messages[-20:]:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or msg.get("type") or "message"
+        content = msg.get("content") or msg.get("text") or msg.get("message") or ""
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)[:2000]
+        compact_messages.append({"role": role, "content": content[:2000], "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt")})
+    return {"ok": True, "agentId": agent_id, "sessionKey": key, "agent": agent, "messages": compact_messages}
+
+
+def abort_agent_session(agent_id: str) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    summary = summarize_agents()
+    agent = next((a for a in summary.get("agents", []) if a.get("id") == agent_id), None)
+    key = agent.get("latestSessionKey") if agent else f"agent:{agent_id}:observer-site"
+    result = gateway_call("sessions.abort", {"key": key}, timeout=18)
+    append_history(agent_id, "system", f"관제 화면에서 세션 중단을 요청했습니다: {key}", {"status": "abort-requested", "sessionKey": key})
+    return {"ok": True, "agentId": agent_id, "sessionKey": key, "result": result, "history": load_history().get(agent_id, [])[-80:]}
+
+
 def gateway_call(method: str, params: dict[str, Any] | None = None, timeout: int = 8) -> Any:
     args = [OPENCLAW_BIN, "gateway", "call", method, "--json", "--timeout", str(timeout * 1000)]
     if params is not None:
@@ -419,7 +482,7 @@ def summarize_agents() -> dict[str, Any]:
             else:
                 detail = f"현재 작업 없음 · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
-        output.append({
+        agent_payload = {
             **base,
             "state": state,
             "statusText": status_text,
@@ -433,7 +496,9 @@ def summarize_agents() -> dict[str, Any]:
             "latestUpdatedAt": latest_updated,
             "latestSessionKey": current.get("key") if current else None,
             "latestPreview": current.get("lastMessagePreview") if current else None,
-        })
+        }
+        output.append(agent_payload)
+        maybe_auto_nudge(agent_payload)
 
     return {
         "ok": True,
@@ -623,6 +688,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/recover":
                 result = send_recovery_nudge(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/session-detail":
+                result = get_agent_session_detail(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/abort":
+                result = abort_agent_session(agent_id)
                 self.json_response(result)
                 return
             self.json_response({"ok": False, "error": "not found"}, 404)
