@@ -306,12 +306,11 @@ def summarize_agents() -> dict[str, Any]:
         current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
         age_ms = max(0, now - current_started) if current_started else 0
         stale_ms = max(0, now - current_updated) if current_updated else 0
-        context_tokens = int(float(current.get("contextTokens") or 0) or 0) if current else 0
         raw_status = str(current.get("status") or "unknown") if current else "none"
 
         # 현재 작업중 여부는 running/queued/processing 세션만 기준으로 삼는다.
         # 과거 failed/done 세션은 최근 기록으로만 보여주고, 현재 상태를 덮어쓰지 않는다.
-        if active and (age_ms >= 120_000 or stale_ms >= 120_000 or context_tokens >= 180_000):
+        if active and stale_ms >= 180_000:
             state = "warning"
         elif not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
             state = "warning"
@@ -328,7 +327,7 @@ def summarize_agents() -> dict[str, Any]:
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"
             if active:
-                detail = f"현재 실행 중: {raw_status} · {model} · {age_ms // 1000:,}초 경과 · {total_tokens:,} tokens"
+                detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전 · {model} · {total_tokens:,} tokens"
             else:
                 detail = f"현재 작업 없음 · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
