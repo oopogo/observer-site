@@ -437,6 +437,55 @@ def summarize_gateway_status() -> dict[str, Any]:
     }
 
 
+def subagent_owner_id(session: dict[str, Any]) -> str | None:
+    key = str(session.get("key") or "")
+    spawned = str(session.get("spawnedBy") or "")
+    for value in (key, spawned):
+        if value.startswith("agent:"):
+            parts = value.split(":")
+            if len(parts) >= 2:
+                return parts[1]
+    return None
+
+
+def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int) -> dict[str, Any]:
+    subs = []
+    for session in sessions:
+        key = str(session.get("key") or "")
+        if ":subagent:" not in key and not session.get("spawnedBy"):
+            continue
+        if subagent_owner_id(session) != agent_id:
+            continue
+        updated = to_epoch_ms(session.get("updatedAt") or session.get("startedAt"))
+        stale_seconds = max(0, (now - updated) // 1000) if updated else 0
+        status = str(session.get("status") or "unknown")
+        normalized = normalize_status(status)
+        state = "done"
+        if normalized == "working":
+            state = "lag" if stale_seconds >= 180 else "working"
+        elif normalized == "warning":
+            state = "failed"
+        item = {
+            "key": key,
+            "state": state,
+            "status": status,
+            "staleSeconds": stale_seconds,
+            "model": session.get("model"),
+            "tokens": int(float(session.get("totalTokens") or 0) or 0),
+        }
+        subs.append(item)
+    subs.sort(key=lambda item: item.get("staleSeconds", 0))
+    recent = subs[:12]
+    return {
+        "total": len(subs),
+        "recent": recent,
+        "done": sum(1 for item in subs if item["state"] == "done"),
+        "working": sum(1 for item in subs if item["state"] == "working"),
+        "lag": sum(1 for item in subs if item["state"] == "lag"),
+        "failed": sum(1 for item in subs if item["state"] == "failed"),
+    }
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sessions_data = gateway_call("sessions.list", timeout=18)
@@ -494,6 +543,7 @@ def summarize_agents() -> dict[str, Any]:
                 recent_note = f" · 최근 활동 {stale_ms // 1000:,}초 전" if current_updated else ""
                 detail = f"현재 생성 중 아님{stale_note}{recent_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
+        subagent_summary = summarize_subagents(base["id"], sessions, now)
         agent_payload = {
             **base,
             "state": state,
@@ -509,6 +559,7 @@ def summarize_agents() -> dict[str, Any]:
             "latestUpdatedAt": latest_updated,
             "latestSessionKey": current.get("key") if current else None,
             "latestPreview": current.get("lastMessagePreview") if current else None,
+            "subagents": subagent_summary,
         }
         output.append(agent_payload)
         maybe_auto_nudge(agent_payload)
@@ -562,6 +613,11 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
     tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
+    subagents = agent.get("subagents") or {}
+    dots = "".join(f'<span class="sub-dot {html_escape(item.get("state"))}" title="{html_escape(item.get("status"))} · {html_escape(item.get("staleSeconds"))}초 전"></span>' for item in (subagents.get("recent") or [])[:12])
+    sub_html = ""
+    if subagents.get("total"):
+        sub_html = f'<div class="subagent-strip"><div class="subagent-dots">{dots}</div><div class="subagent-text">하위 작업 {html_escape(subagents.get("total"))} · 진행 {html_escape(subagents.get("working"))} · 지연 {html_escape(subagents.get("lag"))} · 실패 {html_escape(subagents.get("failed"))}</div></div>'
     badge = state_label(state, agent)
     badge_class = state_badge_class(state, agent)
     work_class = "" if state == "idle" else "work"
@@ -576,6 +632,7 @@ def render_agent_card(agent: dict[str, Any]) -> str:
                 <div class="name">{name} <span class="pill">{badge}</span></div>
                 <div class="status">{detail}</div>
                 <div class="tag-row">{tag_html}</div>
+                {sub_html}
               </div>
             </article>"""
 

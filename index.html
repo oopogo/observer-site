@@ -419,6 +419,37 @@
         background: rgba(255, 107, 138, 0.10);
       }
 
+      .subagent-strip {
+        display: grid;
+        gap: 6px;
+        margin-top: 11px;
+      }
+
+      .subagent-dots {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+
+      .sub-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(203, 214, 234, .45);
+        box-shadow: 0 0 10px rgba(203, 214, 234, .24);
+      }
+
+      .sub-dot.done { background: var(--idle); box-shadow: 0 0 10px rgba(105, 215, 255, .34); }
+      .sub-dot.working { background: var(--work); box-shadow: 0 0 10px rgba(98, 230, 155, .42); }
+      .sub-dot.lag { background: var(--lag); box-shadow: 0 0 10px rgba(255, 184, 107, .42); }
+      .sub-dot.failed { background: var(--danger); box-shadow: 0 0 10px rgba(255, 107, 138, .42); }
+
+      .subagent-text {
+        color: rgba(203, 214, 234, .72);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
       .pill {
         display: inline-flex;
         align-items: center;
@@ -869,6 +900,13 @@
         return 'idle';
       }
 
+      function renderSubagents(agent) {
+        const summary = agent.subagents || {};
+        if (!summary.total) return '';
+        const dots = (summary.recent || []).slice(0, 12).map((item) => `<span class="sub-dot ${escapeHtml(item.state || 'done')}" title="${escapeHtml(item.status || '')} · ${escapeHtml(item.staleSeconds || 0)}초 전"></span>`).join('');
+        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">하위 작업 ${summary.total || 0} · 진행 ${summary.working || 0} · 지연 ${summary.lag || 0} · 실패 ${summary.failed || 0}</div></div>`;
+      }
+
       function renderTags(agent) {
         const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : '현재 생성 중 아님';
         const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
@@ -891,6 +929,7 @@
             <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
             <div class="status">${escapeHtml(agent.detail || agent.statusText || '상태 확인 중')}</div>
             ${renderTags(agent)}
+            ${renderSubagents(agent)}
           </div>`;
         card.addEventListener('click', () => openChat(card));
         card.addEventListener('keydown', (event) => {
