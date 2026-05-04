@@ -778,8 +778,8 @@
         agentRefreshNote.textContent = `상태 갱신: ${secondsAgo(lastAgentsGeneratedAt)} · 10초마다 자동 확인`;
       }
 
-      function stateLabel(state) {
-        if (state === 'working') return '작업중';
+      function stateLabel(state, agent = null) {
+        if (state === 'working') return agent && agent.isLagging ? '작업중 · 지연 가능' : '작업중';
         if (state === 'warning') return '점검';
         return '대기';
       }
@@ -828,10 +828,10 @@
         card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
         card.dataset.agentId = agent.id;
         card.innerHTML = `
-          <span class="state-badge ${stateBadgeClass(agent.state)}">${stateLabel(agent.state)}</span>
+          <span class="state-badge ${stateBadgeClass(agent.state)}">${stateLabel(agent.state, agent)}</span>
           <div class="orb">${agent.orb || agent.name.slice(0, 1)}</div>
           <div>
-            <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state)}</span></div>
+            <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
             <div class="status">${escapeHtml(agent.detail || agent.statusText || '상태 확인 중')}</div>
             ${renderTags(agent)}
           </div>`;

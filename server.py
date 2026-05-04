@@ -424,9 +424,9 @@ def html_escape(value: Any) -> str:
     )
 
 
-def state_label(state: str) -> str:
+def state_label(state: str, agent: dict[str, Any] | None = None) -> str:
     if state == "working":
-        return "작업중"
+        return "작업중 · 지연 가능" if agent and agent.get("isLagging") else "작업중"
     if state == "warning":
         return "점검"
     return "대기"
@@ -449,7 +449,7 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
     tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
-    badge = state_label(state)
+    badge = state_label(state, agent)
     badge_class = state_badge_class(state)
     work_class = "" if state == "idle" else "work"
     warn_class = "warn" if state == "warning" else ""
