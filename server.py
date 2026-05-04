@@ -182,6 +182,40 @@ def validate_chat_message(agent_id: str, message: str) -> None:
         raise ValueError("이 채팅창에서는 게이트웨이 재시작/중지/라이브 설정 변경 지시를 막아두었습니다.")
 
 
+def send_via_sessions_fallback(agent_id: str, message: str, timeout: int = 90) -> str:
+    """Fallback path when OpenResponses closes before returning text."""
+    session_key = f"agent:{agent_id}:observer-site"
+    args = [
+        OPENCLAW_BIN,
+        "gateway",
+        "call",
+        "sessions.send",
+        "--expect-final",
+        "--json",
+        "--timeout",
+        str(timeout * 1000),
+        "--params",
+        json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
+    ]
+    env = os.environ.copy()
+    env.pop("OPENCLAW_GATEWAY_URL", None)
+    env.pop("OPENCLAW_API_URL", None)
+    env["NO_COLOR"] = "1"
+    result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=timeout + 8)
+    raw = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError(raw or "fallback send failed")
+    payload = parse_json_suffix(raw)
+    text = extract_response_text(payload)
+    if text and text not in {"{}", "[]"}:
+        return text
+    status = payload.get("status") if isinstance(payload, dict) else None
+    run_id = payload.get("runId") if isinstance(payload, dict) else None
+    if status or run_id:
+        return f"메시지는 일반 세션 경로로 다시 전달했습니다. 상태: {status or '전달됨'}"
+    return "메시지는 일반 세션 경로로 다시 전달했습니다."
+
+
 def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
     token = read_gateway_token()
     body = json.dumps({
@@ -205,8 +239,26 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             replace_history_message(agent_id, request_id, "system", "응답 도착", {"status": "done", "done": True, "sessionKey": session_key})
             append_history(agent_id, "assistant", text, {"sessionKey": session_key, "requestId": request_id, "status": "done"})
     except Exception as exc:
-        text = f"응답 대기 중 종료/실패: {exc}"
-        replace_history_message(agent_id, request_id, "system", text, {"status": "error", "error": True, "done": True, "sessionKey": session_key})
+        try:
+            fallback_text = send_via_sessions_fallback(agent_id, message)
+            replace_history_message(
+                agent_id,
+                request_id,
+                "system",
+                "응답 연결이 잠시 끊겨 일반 세션 경로로 다시 전달했습니다.",
+                {"status": "fallback", "done": True, "sessionKey": session_key},
+            )
+            if fallback_text:
+                append_history(agent_id, "assistant", fallback_text, {"sessionKey": session_key, "requestId": request_id, "status": "fallback"})
+        except Exception as fallback_exc:
+            text = "응답 연결이 중간에 끊겼습니다. 메시지는 기록했지만, 에이전트 응답을 받지 못했습니다. 다시 보내주세요."
+            replace_history_message(
+                agent_id,
+                request_id,
+                "system",
+                text,
+                {"status": "error", "error": True, "done": True, "sessionKey": session_key, "detail": str(fallback_exc), "originalError": str(exc)},
+            )
 
 
 def send_chat(agent_id: str, message: str) -> dict[str, Any]:
