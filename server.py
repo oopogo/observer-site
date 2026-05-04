@@ -360,11 +360,11 @@ def summarize_agents() -> dict[str, Any]:
         stale_ms = max(0, now - current_updated) if current_updated else 0
         raw_status = str(current.get("status") or "unknown") if current else "none"
 
-        # 현재 작업중 여부는 running/queued/processing 세션만 기준으로 삼는다.
-        # 과거 failed/done 세션은 최근 기록으로만 보여주고, 현재 상태를 덮어쓰지 않는다.
-        if active and stale_ms >= 180_000:
-            state = "warning"
-        elif not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
+        # 현재 작업중 여부는 running/queued/processing 세션을 우선한다.
+        # 실행 중 세션의 갱신 지연만으로는 점검 처리하지 않는다.
+        # 점검은 명시적인 실패/오류/중단 상태가 최근에 관측될 때만 표시한다.
+        is_lagging = bool(active and stale_ms >= 180_000)
+        if not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
             state = "warning"
 
         latest_updated = current_updated
@@ -379,7 +379,8 @@ def summarize_agents() -> dict[str, Any]:
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"
             if active:
-                detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전 · {model} · {total_tokens:,} tokens"
+                lag_note = " · 응답 지연 가능" if is_lagging else ""
+                detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전{lag_note} · {model} · {total_tokens:,} tokens"
             else:
                 detail = f"현재 작업 없음 · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
@@ -391,6 +392,7 @@ def summarize_agents() -> dict[str, Any]:
             "sessionCount": len(agent_sessions),
             "activeSessionCount": len(active),
             "isWorkingNow": bool(active),
+            "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
             "latestUpdatedAt": latest_updated,
@@ -444,7 +446,8 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     orb = html_escape(agent.get("orb") or name[:1])
     detail = html_escape(agent.get("detail") or agent.get("statusText") or "상태 확인 중")
     working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 작업 없음"
-    tags = [agent.get("role"), working_tag, *(agent.get("tags") or []), agent.get("id")]
+    lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
+    tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
     badge = state_label(state)
     badge_class = state_badge_class(state)
