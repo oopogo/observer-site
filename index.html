@@ -753,10 +753,22 @@
         return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
       }
 
+      function secondsAgo(ts) {
+        if (!ts) return '확인 중';
+        const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+        if (diff < 60) return `${diff}초 전`;
+        const minutes = Math.floor(diff / 60);
+        return `${minutes}분 전`;
+      }
+
+      function updateAgentRefreshNote() {
+        agentRefreshNote.textContent = `상태 갱신: ${secondsAgo(lastAgentsGeneratedAt)} · 10초마다 자동 확인`;
+      }
+
       function stateLabel(state) {
-        if (state === 'working') return 'working';
-        if (state === 'warning') return 'check';
-        return 'idle';
+        if (state === 'working') return '작업중';
+        if (state === 'warning') return '점검';
+        return '대기';
       }
 
       function renderMessages(messages) {
