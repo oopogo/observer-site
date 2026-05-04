@@ -729,7 +729,7 @@
 
       <section class="summary" aria-label="요약">
         <div class="metric"><strong id="countTotal">-</strong><span>전체 에이전트</span></div>
-        <div class="metric"><strong id="countIdle">-</strong><span>대기 중</span></div>
+        <div class="metric"><strong id="countIdle">-</strong><span>응답 가능</span></div>
         <div class="metric"><strong id="countWorking">-</strong><span>작업 중 / 점검 필요</span></div>
       </section>
 
@@ -738,11 +738,11 @@
 
         <section class="lane idle">
           <div class="lane-head">
-            <div class="lane-title"><span class="dot"></span>대기</div>
-            <div class="count" id="idleLabel">대기 에이전트</div>
+            <div class="lane-title"><span class="dot"></span>응답 가능</div>
+            <div class="count" id="idleLabel">응답 가능 에이전트</div>
           </div>
           <div class="agent-grid" id="idleAgents">
-            <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 세션 상태를 읽고 있습니다.</div></div></article>
+            <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 에이전트 상태를 읽고 있습니다.</div></div></article>
           </div>
         </section>
 
@@ -757,7 +757,7 @@
         </section>
       </section>
 
-      <p class="hint">실제 OpenClaw 상태를 10초마다 읽어와 에이전트를 대기/작업중 칸으로 이동합니다.</p>
+      <p class="hint">실제 OpenClaw 상태를 10초마다 읽어와 에이전트를 응답 가능/작업중 칸으로 이동합니다.</p>
       <div class="build-note" id="buildNote">화면 버전 확인 중</div>
 
       <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
@@ -838,7 +838,7 @@
       function stateLabel(state, agent = null) {
         if (state === 'working') return agent && agent.isLagging ? '작업중 · 지연 가능' : '작업중';
         if (state === 'warning') return '점검';
-        return '대기';
+        return '응답 가능';
       }
 
       function renderMessages(messages) {
@@ -870,7 +870,7 @@
       }
 
       function renderTags(agent) {
-        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : '현재 작업 없음';
+        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : '현재 생성 중 아님';
         const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
@@ -909,7 +909,7 @@
         countTotal.textContent = counts.total ?? agents.length;
         countIdle.textContent = counts.idle ?? agents.filter((a) => a.state === 'idle').length;
         countWorking.textContent = (counts.working || 0) + (counts.warning || 0);
-        idleLabel.textContent = `${countIdle.textContent} 대기`;
+        idleLabel.textContent = `${countIdle.textContent} 응답 가능`;
         workingLabel.textContent = `${countWorking.textContent} 작업/점검`;
 
         idleAgents.innerHTML = '';
@@ -918,8 +918,8 @@
         const active = agents.filter((agent) => agent.state !== 'idle');
         for (const agent of idle) idleAgents.appendChild(agentCard(agent));
         for (const agent of active) workingAgents.appendChild(agentCard(agent));
-        if (!idle.length) idleAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">대기 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>';
-        if (!active.length) workingAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 실행 중인 에이전트가 없습니다.</div></div></article>';
+        if (!idle.length) idleAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">응답 가능 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>';
+        if (!active.length) workingAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 생성 중인 에이전트가 없습니다.</div></div></article>';
       }
 
       function koreanRuntime(text) {

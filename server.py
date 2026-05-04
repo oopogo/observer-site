@@ -476,13 +476,13 @@ def summarize_agents() -> dict[str, Any]:
             state = "warning"
 
         latest_updated = current_updated
-        status_text = "대기 중"
+        status_text = "응답 가능"
         if state == "working":
             status_text = "작업 중"
         elif state == "warning":
             status_text = "점검 필요"
 
-        detail = "현재 작업 없음 · 최근 실행 세션 없음"
+        detail = "현재 생성 중 아님 · 최근 실행 세션 없음"
         if current:
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"
@@ -490,8 +490,9 @@ def summarize_agents() -> dict[str, Any]:
                 lag_note = " · 응답 지연 가능" if is_lagging else ""
                 detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전{lag_note} · {model} · {total_tokens:,} tokens"
             else:
-                stale_note = f" · 오래된 running 세션 {len(stale_active)}개 무시" if stale_active else ""
-                detail = f"현재 작업 없음{stale_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
+                stale_note = f" · 고아 running 세션 {len(stale_active)}개 제외" if stale_active else ""
+                recent_note = f" · 최근 활동 {stale_ms // 1000:,}초 전" if current_updated else ""
+                detail = f"현재 생성 중 아님{stale_note}{recent_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
         agent_payload = {
             **base,
@@ -557,7 +558,7 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     name = html_escape(agent.get("name") or agent.get("id") or "agent")
     orb = html_escape(agent.get("orb") or name[:1])
     detail = html_escape(agent.get("detail") or agent.get("statusText") or "상태 확인 중")
-    working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 작업 없음"
+    working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 생성 중 아님"
     lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
     tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
