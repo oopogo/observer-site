@@ -259,34 +259,39 @@ def summarize_agents() -> dict[str, Any]:
         agent_sessions = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
         agent_sessions.sort(key=lambda s: to_epoch_ms(s.get("updatedAt") or s.get("startedAt")), reverse=True)
         active = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "working"]
-        failed = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "warning"]
-        latest = active[0] if active else (failed[0] if failed else (agent_sessions[0] if agent_sessions else None))
+        latest = agent_sessions[0] if agent_sessions else None
+        current = active[0] if active else latest
 
-        state = "idle"
-        if active:
-            state = "working"
-        if failed:
+        state = "working" if active else "idle"
+        current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else 0
+        current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
+        age_ms = max(0, now - current_started) if current_started else 0
+        stale_ms = max(0, now - current_updated) if current_updated else 0
+        context_tokens = int(float(current.get("contextTokens") or 0) or 0) if current else 0
+        raw_status = str(current.get("status") or "unknown") if current else "none"
+
+        # 현재 작업중 여부는 running/queued/processing 세션만 기준으로 삼는다.
+        # 과거 failed/done 세션은 최근 기록으로만 보여주고, 현재 상태를 덮어쓰지 않는다.
+        if active and (age_ms >= 120_000 or stale_ms >= 120_000 or context_tokens >= 180_000):
             state = "warning"
-        if latest and state == "working":
-            started = to_epoch_ms(latest.get("startedAt") or latest.get("updatedAt"))
-            age_ms = max(0, now - started) if started else int(float(latest.get("ageMs") or 0) or 0)
-            context_tokens = int(float(latest.get("contextTokens") or 0) or 0)
-            if age_ms >= 120_000 or context_tokens >= 180_000:
-                state = "warning"
+        elif not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
+            state = "warning"
 
-        latest_updated = to_epoch_ms(latest.get("updatedAt")) if latest else 0
+        latest_updated = current_updated
         status_text = "대기 중"
         if state == "working":
             status_text = "작업 중"
         elif state == "warning":
-            status_text = "확인 필요"
+            status_text = "점검 필요"
 
-        detail = "최근 실행 세션 없음"
-        if latest:
-            total_tokens = int(float(latest.get("totalTokens") or 0) or 0)
-            model = latest.get("model") or "unknown"
-            raw_status = latest.get("status") or "unknown"
-            detail = f"최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
+        detail = "현재 작업 없음 · 최근 실행 세션 없음"
+        if current:
+            total_tokens = int(float(current.get("totalTokens") or 0) or 0)
+            model = current.get("model") or "unknown"
+            if active:
+                detail = f"현재 실행 중: {raw_status} · {model} · {age_ms // 1000:,}초 경과 · {total_tokens:,} tokens"
+            else:
+                detail = f"현재 작업 없음 · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
         output.append({
             **base,
@@ -295,9 +300,12 @@ def summarize_agents() -> dict[str, Any]:
             "detail": detail,
             "sessionCount": len(agent_sessions),
             "activeSessionCount": len(active),
+            "isWorkingNow": bool(active),
+            "ageSeconds": age_ms // 1000 if current else 0,
+            "staleSeconds": stale_ms // 1000 if current else 0,
             "latestUpdatedAt": latest_updated,
-            "latestSessionKey": latest.get("key") if latest else None,
-            "latestPreview": latest.get("lastMessagePreview") if latest else None,
+            "latestSessionKey": current.get("key") if current else None,
+            "latestPreview": current.get("lastMessagePreview") if current else None,
         })
 
     return {

@@ -235,6 +235,12 @@
         font-size: 13px;
       }
 
+      .refresh-note {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
       .agent-grid {
         position: relative;
         z-index: 1;
@@ -617,6 +623,7 @@
             <div class="lane-title"><span class="dot"></span>대기</div>
             <div class="count" id="idleLabel">대기 에이전트</div>
           </div>
+          <div class="refresh-note" id="agentRefreshNote">상태 갱신: 확인 중</div>
           <div class="agent-grid" id="idleAgents">
             <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 세션 상태를 읽고 있습니다.</div></div></article>
           </div>
@@ -673,6 +680,7 @@
       const input = document.getElementById('chatInput');
       const idleAgents = document.getElementById('idleAgents');
       const workingAgents = document.getElementById('workingAgents');
+      const agentRefreshNote = document.getElementById('agentRefreshNote');
       const gatewayRuntimeCard = document.getElementById('gatewayRuntimeCard');
       const gatewayProbeCard = document.getElementById('gatewayProbeCard');
       const gatewayRuntime = document.getElementById('gatewayRuntime');
@@ -687,6 +695,7 @@
       const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
+      let lastAgentsGeneratedAt = 0;
       let sending = false;
       let historyPollTimer = null;
 
@@ -723,7 +732,8 @@
       }
 
       function renderTags(agent) {
-        const tags = [agent.role, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 5);
+        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : '현재 작업 없음';
+        const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
 
@@ -756,6 +766,8 @@
       function renderAgents(payload) {
         const agents = payload.agents || [];
         latestAgents = agents;
+        lastAgentsGeneratedAt = payload.generatedAt || Date.now();
+        updateAgentRefreshNote();
         const counts = payload.counts || { total: agents.length, idle: 0, working: 0, warning: 0 };
         countTotal.textContent = counts.total ?? agents.length;
         countIdle.textContent = counts.idle ?? agents.filter((a) => a.state === 'idle').length;
@@ -921,6 +933,7 @@
       loadAgents();
       window.setInterval(loadGatewayStatus, 10000);
       window.setInterval(loadAgents, 10000);
+      window.setInterval(updateAgentRefreshNote, 1000);
     </script>
   </body>
 </html>
