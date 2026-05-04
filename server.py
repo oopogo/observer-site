@@ -28,6 +28,45 @@ AGENTS = [
     {"id": "observer", "name": "observer", "orb": "옵", "role": "운영 감시자", "tags": ["OPS", "GATEWAY", "감시"]},
     {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
+CACHE_TTL_SECONDS = 8
+AGENTS_CACHE: dict[str, Any] | None = None
+GATEWAY_CACHE: dict[str, Any] | None = None
+CACHE_LOCK = threading.Lock()
+
+
+def cache_get(name: str) -> dict[str, Any] | None:
+    with CACHE_LOCK:
+        cached = AGENTS_CACHE if name == "agents" else GATEWAY_CACHE
+        if not isinstance(cached, dict):
+            return None
+        age_ms = int(time.time() * 1000) - int(cached.get("generatedAt") or 0)
+        return {**cached, "cacheAgeMs": max(0, age_ms)}
+
+
+def cache_set(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    global AGENTS_CACHE, GATEWAY_CACHE
+    with CACHE_LOCK:
+        if name == "agents":
+            AGENTS_CACHE = payload
+        else:
+            GATEWAY_CACHE = payload
+    return payload
+
+
+def cache_is_fresh(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return False
+    age_ms = int(time.time() * 1000) - int(payload.get("generatedAt") or 0)
+    return age_ms <= CACHE_TTL_SECONDS * 1000
+
+
+def stale_payload(name: str, error: Exception) -> dict[str, Any] | None:
+    cached = cache_get(name)
+    if not cached:
+        return None
+    cached["stale"] = True
+    cached["warning"] = f"최근 정상 상태를 표시 중입니다: {error}"
+    return cached
 
 
 def parse_json_suffix(raw: str) -> Any:
@@ -249,7 +288,7 @@ def summarize_gateway_status() -> dict[str, Any]:
 
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
-    sessions_data = gateway_call("sessions.list", timeout=8)
+    sessions_data = gateway_call("sessions.list", timeout=18)
     sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
     if not isinstance(sessions, list):
         sessions = []
@@ -349,22 +388,34 @@ class Handler(SimpleHTTPRequestHandler):
             self.json_response(public_history(agent_id))
             return
         if path == "/api/agents":
+            cached = cache_get("agents")
+            if cache_is_fresh(cached):
+                self.json_response(cached)
+                return
             try:
-                payload = summarize_agents()
-                code = 200
-            except Exception as exc:  # keep UI alive with a clear read-only error
-                payload = {"ok": False, "error": str(exc), "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
-                code = 502
-            self.json_response(payload, code)
+                payload = cache_set("agents", summarize_agents())
+            except Exception as exc:  # keep UI alive with last known good state
+                payload = stale_payload("agents", exc)
+                if not payload:
+                    payload = {"ok": False, "error": str(exc), "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
+                    self.json_response(payload, 502)
+                    return
+            self.json_response(payload)
             return
         if path == "/api/gateway-status":
+            cached = cache_get("gateway")
+            if cache_is_fresh(cached):
+                self.json_response(cached)
+                return
             try:
-                payload = summarize_gateway_status()
-                code = 200 if payload.get("ok") else 503
+                payload = cache_set("gateway", summarize_gateway_status())
             except Exception as exc:
-                payload = {"ok": False, "state": "warning", "error": str(exc), "generatedAt": int(time.time() * 1000)}
-                code = 503
-            self.json_response(payload, code)
+                payload = stale_payload("gateway", exc)
+                if not payload:
+                    payload = {"ok": False, "state": "warning", "error": str(exc), "generatedAt": int(time.time() * 1000)}
+                    self.json_response(payload, 503)
+                    return
+            self.json_response(payload, 200 if payload.get("ok") else 503)
             return
         super().do_GET()
 
