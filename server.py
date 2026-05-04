@@ -273,6 +273,41 @@ def send_chat(agent_id: str, message: str) -> dict[str, Any]:
     return {"ok": True, "accepted": True, "pending": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "history": load_history().get(agent_id, [])[-80:]}
 
 
+def send_recovery_nudge(agent_id: str) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    agent = next(a for a in AGENTS if a["id"] == agent_id)
+    session_key = f"agent:{agent_id}:observer-site"
+    message = (
+        "관제 화면에서 현재 작업이 지연 가능 상태로 표시됩니다. "
+        "지금 실제 상태를 확인해서 짧게 보고하세요. "
+        "반드시 현재 실행 중인지/막혔는지, 마지막으로 확인한 파일·로그·세션·작업 단위, 다음 조치를 포함하세요. "
+        "게이트웨이/systemd/config 변경은 하지 마세요."
+    )
+    args = [
+        OPENCLAW_BIN,
+        "gateway",
+        "call",
+        "sessions.send",
+        "--json",
+        "--timeout",
+        "20000",
+        "--params",
+        json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
+    ]
+    env = os.environ.copy()
+    env.pop("OPENCLAW_GATEWAY_URL", None)
+    env.pop("OPENCLAW_API_URL", None)
+    env["NO_COLOR"] = "1"
+    result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=28)
+    raw = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError(raw or "상태 재확인 요청 실패")
+    payload = parse_json_suffix(raw)
+    append_history(agent_id, "system", "관제 화면에서 상태 재확인 요청을 보냈습니다.", {"status": "recovery-requested", "sessionKey": session_key})
+    return {"ok": True, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "result": payload, "history": load_history().get(agent_id, [])[-80:]}
+
+
 def gateway_call(method: str, params: dict[str, Any] | None = None, timeout: int = 8) -> Any:
     args = [OPENCLAW_BIN, "gateway", "call", method, "--json", "--timeout", str(timeout * 1000)]
     if params is not None:
@@ -578,15 +613,19 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         path = self.path.split("?", 1)[0]
-        if path != "/api/chat/send":
-            self.json_response({"ok": False, "error": "not found"}, 404)
-            return
         try:
             data = read_body_json(self)
             agent_id = str(data.get("agentId") or "observer")
-            message = str(data.get("message") or "")
-            result = send_chat(agent_id, message)
-            self.json_response(result, 200 if result.get("ok") else 504)
+            if path == "/api/chat/send":
+                message = str(data.get("message") or "")
+                result = send_chat(agent_id, message)
+                self.json_response(result, 200 if result.get("ok") else 504)
+                return
+            if path == "/api/agent/recover":
+                result = send_recovery_nudge(agent_id)
+                self.json_response(result)
+                return
+            self.json_response({"ok": False, "error": "not found"}, 404)
         except Exception as exc:
             self.json_response({"ok": False, "error": str(exc)}, 400)
 

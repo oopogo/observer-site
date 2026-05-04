@@ -608,7 +608,7 @@
         font: inherit;
       }
 
-      .chat-send {
+      .chat-send, .recover-button {
         border: 0;
         border-radius: 17px;
         padding: 0 18px;
@@ -616,6 +616,18 @@
         background: linear-gradient(135deg, #fff2cf, #ffb86b);
         font-weight: 900;
         cursor: pointer;
+      }
+
+      .recover-button {
+        min-height: 40px;
+        color: #dff7ff;
+        background: rgba(105, 215, 255, 0.12);
+        border: 1px solid rgba(105, 215, 255, 0.28);
+      }
+
+      .recover-button:disabled, .chat-send:disabled {
+        cursor: wait;
+        opacity: .62;
       }
 
       .chat-note {
@@ -700,7 +712,8 @@
         </section>
       </section>
 
-      <p class="hint">실제 OpenClaw 세션 상태를 10초마다 실제 OpenClaw 상태를 읽어와 에이전트를 대기/작업중 칸으로 이동합니다.</p>
+      <p class="hint">실제 OpenClaw 상태를 10초마다 읽어와 에이전트를 대기/작업중 칸으로 이동합니다.</p>
+      <div class="build-note" id="buildNote">화면 버전 확인 중</div>
 
       <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
         <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
@@ -722,6 +735,7 @@
               <textarea class="chat-input" id="chatInput" placeholder="업무 지시를 입력하세요. 예: 지금 상태 확인하고 보고해줘"></textarea>
               <button class="chat-send" type="submit">보내기</button>
             </div>
+            <button class="recover-button" type="button" id="recoverButton">상태 재확인 요청</button>
             <div class="chat-note">Cloudflare Access 보호 아래에서 허용된 OpenClaw 에이전트에게 실제로 전달합니다. 게이트웨이/시스템 재시작 지시는 차단됩니다.</div>
           </form>
         </section>
@@ -753,14 +767,15 @@
       const idleLabel = document.getElementById('idleLabel');
       const workingLabel = document.getElementById('workingLabel');
       const buildNote = document.getElementById('buildNote');
+      const recoverButton = document.getElementById('recoverButton');
       const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
       let lastAgentsGeneratedAt = 0;
       let sending = false;
       let historyPollTimer = null;
-      const BUILD_ID = '2026-05-05-0737';
-      buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
+      const BUILD_ID = '2026-05-05-0814';
+      if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
         return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -975,6 +990,28 @@
       });
       window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') closeChat();
+      });
+
+      recoverButton.addEventListener('click', async () => {
+        if (!selectedAgent || recoverButton.disabled) return;
+        recoverButton.disabled = true;
+        recoverButton.textContent = '요청 중';
+        appendSystemMessage('상태 재확인 요청을 보내는 중입니다...');
+        try {
+          const res = await fetch('/api/agent/recover', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: selectedAgent }),
+          });
+          const payload = await res.json();
+          renderMessages(payload.history || [{ role: 'system', content: payload.error || '상태 재확인 요청 실패' }]);
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`상태 재확인 요청 실패: ${error}`);
+        } finally {
+          recoverButton.disabled = false;
+          recoverButton.textContent = '상태 재확인 요청';
+        }
       });
 
       form.addEventListener('submit', async (event) => {
