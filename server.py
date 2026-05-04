@@ -532,9 +532,9 @@ def state_label(state: str, agent: dict[str, Any] | None = None) -> str:
     return "대기"
 
 
-def state_badge_class(state: str) -> str:
+def state_badge_class(state: str, agent: dict[str, Any] | None = None) -> str:
     if state == "working":
-        return "work"
+        return "lag" if agent and agent.get("isLagging") else "work"
     if state == "warning":
         return "warn"
     return "idle"
@@ -550,12 +550,13 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
     badge = state_label(state, agent)
-    badge_class = state_badge_class(state)
+    badge_class = state_badge_class(state, agent)
     work_class = "" if state == "idle" else "work"
+    lag_class = "lag" if agent.get("isLagging") else ""
     warn_class = "warn" if state == "warning" else ""
     accent = "idle" if state == "idle" else "work"
     return f"""
-            <article class="agent {work_class} {warn_class}" role="button" tabindex="0" data-agent="{name}" data-state="{html_escape(agent.get('statusText') or '상태 확인 중')}" data-accent="{accent}" data-agent-id="{html_escape(agent.get('id'))}">
+            <article class="agent {work_class} {lag_class} {warn_class}" role="button" tabindex="0" data-agent="{name}" data-state="{html_escape(agent.get('statusText') or '상태 확인 중')}" data-accent="{accent}" data-agent-id="{html_escape(agent.get('id'))}">
               <span class="state-badge {badge_class}">{badge}</span>
               <div class="orb">{orb}</div>
               <div>

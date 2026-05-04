@@ -18,6 +18,7 @@
         --idle: #69d7ff;
         --work: #ffb86b;
         --danger: #ff6b8a;
+        --lag: #b78cff;
       }
 
       * { box-sizing: border-box; }
@@ -300,6 +301,17 @@
         box-shadow: 0 0 12px var(--work);
       }
 
+      .state-badge.lag {
+        border-color: rgba(183, 140, 255, 0.48);
+        color: #eadcff;
+        background: rgba(183, 140, 255, 0.14);
+      }
+
+      .state-badge.lag::before {
+        background: var(--lag);
+        box-shadow: 0 0 12px var(--lag);
+      }
+
       .state-badge.warn {
         border-color: rgba(255, 107, 138, 0.46);
         color: #ffd0da;
@@ -332,6 +344,16 @@
         background: radial-gradient(circle at 32% 24%, #fff, var(--work) 35%, #c66a1f 100%);
         box-shadow: 0 0 0 9px rgba(255, 184, 107, 0.09), 0 0 42px rgba(255, 184, 107, 0.48);
         animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      .agent.lag {
+        border-color: rgba(183, 140, 255, 0.52);
+        background: rgba(183, 140, 255, 0.10);
+      }
+
+      .agent.lag .orb {
+        background: radial-gradient(circle at 32% 24%, #fff, var(--lag) 35%, #6c37c9 100%);
+        box-shadow: 0 0 0 9px rgba(183, 140, 255, 0.1), 0 0 42px rgba(183, 140, 255, 0.48);
       }
 
       .agent.warn {
@@ -383,6 +405,12 @@
         border-color: rgba(255, 184, 107, 0.28);
         color: #ffe1b7;
         background: rgba(255, 184, 107, 0.09);
+      }
+
+      .agent.lag .tag {
+        border-color: rgba(183, 140, 255, 0.34);
+        color: #eadcff;
+        background: rgba(183, 140, 255, 0.10);
       }
 
       .agent.warn .tag {
@@ -835,8 +863,8 @@
         body.scrollTop = body.scrollHeight;
       }
 
-      function stateBadgeClass(state) {
-        if (state === 'working') return 'work';
+      function stateBadgeClass(state, agent = null) {
+        if (state === 'working') return agent && agent.isLagging ? 'lag' : 'work';
         if (state === 'warning') return 'warn';
         return 'idle';
       }
@@ -849,7 +877,7 @@
 
       function agentCard(agent) {
         const card = document.createElement('article');
-        card.className = `agent ${agent.state === 'idle' ? '' : 'work'} ${agent.state === 'warning' ? 'warn' : ''}`.trim();
+        card.className = `agent ${agent.state === 'idle' ? '' : 'work'} ${agent.isLagging ? 'lag' : ''} ${agent.state === 'warning' ? 'warn' : ''}`.trim();
         card.setAttribute('role', 'button');
         card.setAttribute('tabindex', '0');
         card.dataset.agent = agent.name;
@@ -857,7 +885,7 @@
         card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
         card.dataset.agentId = agent.id;
         card.innerHTML = `
-          <span class="state-badge ${stateBadgeClass(agent.state)}">${stateLabel(agent.state, agent)}</span>
+          <span class="state-badge ${stateBadgeClass(agent.state, agent)}">${stateLabel(agent.state, agent)}</span>
           <div class="orb">${agent.orb || agent.name.slice(0, 1)}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
