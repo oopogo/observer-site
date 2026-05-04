@@ -326,7 +326,6 @@
       .agent.work {
         border-color: rgba(255, 184, 107, 0.45);
         background: rgba(255, 184, 107, 0.09);
-        animation: arrive 650ms cubic-bezier(.2,.8,.2,1) both;
       }
 
       .agent.work .orb {
@@ -802,6 +801,9 @@
       let latestAgents = [];
       let sending = false;
       let historyPollTimer = null;
+      let agentsPollTimer = null;
+      let agentsLoading = false;
+      const AGENTS_REFRESH_MS = 10000;
       const BUILD_ID = '2026-05-05-0814';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
@@ -942,14 +944,24 @@
       }
 
       async function loadAgents() {
+        if (agentsLoading) return;
+        agentsLoading = true;
         try {
           const res = await fetch('/api/agents', { cache: 'no-store' });
           const payload = await res.json();
           if (!payload.ok) throw new Error(payload.error || '상태 조회 실패');
           renderAgents(payload);
         } catch (error) {
-          workingAgents.innerHTML = `<article class="agent work warn"><div class="orb">!</div><div><div class="name">상태 조회 실패 <span class="pill">check</span></div><div class="status">${String(error)}</div></div></article>`;
+          workingAgents.innerHTML = `<article class="agent work warn"><div class="orb">!</div><div><div class="name">상태 조회 실패 <span class="pill">점검</span></div><div class="status">${String(error)}</div></div></article>`;
+        } finally {
+          agentsLoading = false;
         }
+      }
+
+      async function pollAgentsLoop() {
+        if (agentsPollTimer) window.clearTimeout(agentsPollTimer);
+        await loadAgents();
+        agentsPollTimer = window.setTimeout(pollAgentsLoop, AGENTS_REFRESH_MS);
       }
 
       async function loadHistory(agentId) {
@@ -1120,9 +1132,8 @@
       });
 
       loadGatewayStatus();
-      loadAgents();
+      pollAgentsLoop();
       window.setInterval(loadGatewayStatus, 10000);
-      window.setInterval(loadAgents, 10000);
     </script>
   </body>
 </html>
