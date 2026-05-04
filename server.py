@@ -475,14 +475,16 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
         }
         subs.append(item)
     subs.sort(key=lambda item: item.get("staleSeconds", 0))
-    recent = subs[:12]
+    visible = [item for item in subs if item["state"] in {"working", "lag", "failed"} or item.get("staleSeconds", 999999) <= 600]
+    recent = visible[:12]
     return {
-        "total": len(subs),
+        "total": len(visible),
+        "hiddenTotal": max(0, len(subs) - len(visible)),
         "recent": recent,
-        "done": sum(1 for item in subs if item["state"] == "done"),
-        "working": sum(1 for item in subs if item["state"] == "working"),
-        "lag": sum(1 for item in subs if item["state"] == "lag"),
-        "failed": sum(1 for item in subs if item["state"] == "failed"),
+        "done": sum(1 for item in visible if item["state"] == "done"),
+        "working": sum(1 for item in visible if item["state"] == "working"),
+        "lag": sum(1 for item in visible if item["state"] == "lag"),
+        "failed": sum(1 for item in visible if item["state"] == "failed"),
     }
 
 
@@ -617,7 +619,9 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     dots = "".join(f'<span class="sub-dot {html_escape(item.get("state"))}" title="{html_escape(item.get("status"))} · {html_escape(item.get("staleSeconds"))}초 전"></span>' for item in (subagents.get("recent") or [])[:12])
     sub_html = ""
     if subagents.get("total"):
-        sub_html = f'<div class="subagent-strip"><div class="subagent-dots">{dots}</div><div class="subagent-text">하위 작업 {html_escape(subagents.get("total"))} · 진행 {html_escape(subagents.get("working"))} · 지연 {html_escape(subagents.get("lag"))} · 실패 {html_escape(subagents.get("failed"))}</div></div>'
+        hidden = subagents.get("hiddenTotal") or 0
+        hidden_text = f" · 숨김 {html_escape(hidden)}" if hidden else ""
+        sub_html = f'<div class="subagent-strip"><div class="subagent-dots">{dots}</div><div class="subagent-text">하위 작업 {html_escape(subagents.get("total"))} · 진행 {html_escape(subagents.get("working"))} · 지연 {html_escape(subagents.get("lag"))} · 실패 {html_escape(subagents.get("failed"))}{hidden_text}</div></div>'
     badge = state_label(state, agent)
     badge_class = state_badge_class(state, agent)
     work_class = "" if state == "idle" else "work"
