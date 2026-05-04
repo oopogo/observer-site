@@ -569,13 +569,42 @@
       const countWorking = document.getElementById('countWorking');
       const idleLabel = document.getElementById('idleLabel');
       const workingLabel = document.getElementById('workingLabel');
+      const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
+      let sending = false;
+      let historyPollTimer = null;
+
+      function escapeHtml(text) {
+        return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+      }
 
       function stateLabel(state) {
         if (state === 'working') return 'working';
         if (state === 'warning') return 'check';
         return 'idle';
+      }
+
+      function renderMessages(messages) {
+        body.innerHTML = '';
+        for (const msg of messages || []) {
+          const div = document.createElement('div');
+          div.className = `message ${msg.role === 'user' ? 'user' : 'system'}`;
+          div.innerHTML = escapeHtml(msg.content || '');
+          body.appendChild(div);
+        }
+        if (!body.innerHTML.trim()) {
+          body.innerHTML = '<div class="message system">아직 대화 기록이 없습니다.</div>';
+        }
+        body.scrollTop = body.scrollHeight;
+      }
+
+      function appendSystemMessage(text) {
+        const system = document.createElement('div');
+        system.className = 'message system';
+        system.textContent = text;
+        body.appendChild(system);
+        body.scrollTop = body.scrollHeight;
       }
 
       function agentCard(agent) {
@@ -634,24 +663,60 @@
         }
       }
 
-      function openChat(card) {
-        selectedAgent = card.dataset.agent || 'agent';
+      async function loadHistory(agentId) {
+        const res = await fetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}`, { cache: 'no-store' });
+        const payload = await res.json();
+        if (!payload.ok) throw new Error(payload.error || '대화 기록 조회 실패');
+        return payload.messages || [];
+      }
+
+      async function refreshOpenChatHistory() {
+        if (!backdrop.classList.contains('open') || !selectedAgent) return;
+        try {
+          const messages = await loadHistory(selectedAgent);
+          if (messages.length) renderMessages(messages);
+        } catch (_) {
+          // keep current UI state
+        }
+      }
+
+      async function openChat(card) {
+        selectedAgent = card.dataset.agentId || 'observer';
         const state = card.dataset.state || '상태 확인 중';
         const accent = card.dataset.accent || 'idle';
-        const agent = latestAgents.find((item) => item.name === selectedAgent || item.id === card.dataset.agentId);
-        title.textContent = `${selectedAgent} 대화`;
+        const agent = latestAgents.find((item) => item.id === selectedAgent || item.name === card.dataset.agent);
+        title.textContent = `${(agent && agent.name) || card.dataset.agent || selectedAgent} 대화`;
         subtitle.textContent = `${state} · 업무 전달 창`;
-        orb.textContent = (agent && agent.orb) || selectedAgent.slice(0, 1);
+        orb.textContent = (agent && agent.orb) || ((agent && agent.name) || selectedAgent).slice(0, 1);
         orb.classList.toggle('work', accent === 'work');
-        body.innerHTML = `<div class="message system"><strong>${selectedAgent}</strong> 현재 상태: ${agent ? agent.detail : state}</div><div class="message system">업무 전달은 다음 단계에서 인증된 전송 API로 연결합니다.</div>`;
         backdrop.classList.add('open');
         backdrop.setAttribute('aria-hidden', 'false');
+        body.innerHTML = '<div class="message system">대화 기록을 불러오는 중입니다...</div>';
+        try {
+          const messages = await loadHistory(selectedAgent);
+          if (!messages.length) {
+            renderMessages([
+              { role: 'system', content: `${(agent && agent.name) || card.dataset.agent || selectedAgent} 현재 상태: ${agent ? agent.detail : state}` },
+              { role: 'system', content: '업무를 입력하면 실제 OpenClaw 에이전트에게 전달합니다.' },
+            ]);
+          } else {
+            renderMessages(messages);
+          }
+        } catch (error) {
+          renderMessages([{ role: 'system', content: `대화 기록 조회 실패: ${error}` }]);
+        }
+        if (historyPollTimer) window.clearInterval(historyPollTimer);
+        historyPollTimer = window.setInterval(refreshOpenChatHistory, 5000);
         setTimeout(() => input.focus(), 50);
       }
 
       function closeChat() {
         backdrop.classList.remove('open');
         backdrop.setAttribute('aria-hidden', 'true');
+        if (historyPollTimer) {
+          window.clearInterval(historyPollTimer);
+          historyPollTimer = null;
+        }
       }
 
       closeBtn.addEventListener('click', closeChat);
@@ -662,20 +727,38 @@
         if (event.key === 'Escape') closeChat();
       });
 
-      form.addEventListener('submit', (event) => {
+      form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const text = input.value.trim();
-        if (!text) return;
+        if (!text || sending) return;
+        sending = true;
+        sendButton.disabled = true;
+        sendButton.textContent = '전송 중';
         const user = document.createElement('div');
         user.className = 'message user';
         user.textContent = text;
         body.appendChild(user);
-        const system = document.createElement('div');
-        system.className = 'message system';
-        system.textContent = `${selectedAgent} 전송 API 연결 전입니다. 다음 단계에서 실제 전달됩니다.`;
-        body.appendChild(system);
-        input.value = '';
+        appendSystemMessage('전송됨. 응답을 기다리는 중입니다...');
         body.scrollTop = body.scrollHeight;
+        input.value = '';
+        try {
+          const res = await fetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: selectedAgent, message: text }),
+          });
+          const payload = await res.json();
+          renderMessages(payload.history || [{ role: 'system', content: payload.error || '응답 없음' }]);
+          await refreshOpenChatHistory();
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`전송 실패: ${error}`);
+        } finally {
+          sending = false;
+          sendButton.disabled = false;
+          sendButton.textContent = '보내기';
+          input.focus();
+        }
       });
 
       loadAgents();
