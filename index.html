@@ -81,6 +81,12 @@
         letter-spacing: -0.02em;
       }
 
+      .tab.secondary {
+        color: var(--text);
+        background: rgba(255,255,255,.08);
+        border: 1px solid rgba(255,255,255,.13);
+      }
+
       .gateway-strip {
         display: grid;
         grid-template-columns: minmax(0, 1.25fr) repeat(3, minmax(0, .75fr));
@@ -761,6 +767,7 @@
         </div>
         <nav class="tabs" aria-label="옵저버 사이트 탭">
           <button class="tab" type="button">에이전트</button>
+          <button class="tab secondary" type="button" id="editAgentsButton">편집</button>
         </nav>
       </header>
 
@@ -832,11 +839,6 @@
             <div class="message system">에이전트를 선택하면 여기서 업무를 전달하게 됩니다.</div>
           </div>
           <form class="chat-foot" id="chatForm">
-            <div class="settings-row">
-              <input class="settings-input" id="displayNameInput" placeholder="표시 이름" />
-              <input class="avatar-input" id="avatarInput" type="file" accept="image/*" />
-              <button class="recover-button" type="button" id="saveSettingsButton">저장</button>
-            </div>
             <div class="chat-input-row">
               <textarea class="chat-input" id="chatInput" placeholder="업무 지시를 입력하세요. 예: 지금 상태 확인하고 보고해줘"></textarea>
               <button class="chat-send" type="submit">보내기</button>
@@ -851,6 +853,25 @@
           </form>
         </section>
       </div>
+
+      <div class="chat-backdrop" id="editBackdrop" aria-hidden="true">
+        <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+          <div class="chat-head">
+            <div class="chat-agent">
+              <div class="mini-orb" id="editOrb">편</div>
+              <div>
+                <div class="chat-title" id="editTitle">에이전트 표시 편집</div>
+                <div class="chat-subtitle">표시 이름과 원형 볼 이미지만 편집합니다.</div>
+              </div>
+            </div>
+            <button class="chat-close" type="button" id="editClose" aria-label="편집창 닫기">×</button>
+          </div>
+          <div class="chat-body">
+            <div class="editor-list" id="editorList"></div>
+          </div>
+        </section>
+      </div>
+
 
     </main>
 
@@ -881,9 +902,10 @@
       const detailButton = document.getElementById('detailButton');
       const abortButton = document.getElementById('abortButton');
       const sessionDetail = document.getElementById('sessionDetail');
-      const displayNameInput = document.getElementById('displayNameInput');
-      const avatarInput = document.getElementById('avatarInput');
-      const saveSettingsButton = document.getElementById('saveSettingsButton');
+      const editAgentsButton = document.getElementById('editAgentsButton');
+      const editBackdrop = document.getElementById('editBackdrop');
+      const editClose = document.getElementById('editClose');
+      const editorList = document.getElementById('editorList');
       const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
@@ -1086,8 +1108,6 @@
         const agent = latestAgents.find((item) => item.id === selectedAgent || item.name === card.dataset.agent);
         title.textContent = `${(agent && agent.name) || card.dataset.agent || selectedAgent} 대화`;
         subtitle.textContent = `${state} · 업무 전달 창`;
-        displayNameInput.value = (agent && agent.name) || card.dataset.agent || selectedAgent;
-        avatarInput.value = '';
         orb.textContent = (agent && agent.orb) || ((agent && agent.name) || selectedAgent).slice(0, 1);
         orb.classList.toggle('work', accent === 'work');
         backdrop.classList.add('open');
@@ -1165,9 +1185,8 @@
       }
 
 
-      function readAvatarFile() {
+      function readFileAsDataUrl(file) {
         return new Promise((resolve, reject) => {
-          const file = avatarInput.files && avatarInput.files[0];
           if (!file) return resolve(null);
           if (!file.type.startsWith('image/')) return reject(new Error('이미지 파일만 사용할 수 있습니다.'));
           if (file.size > 2_000_000) return reject(new Error('이미지는 2MB 이하만 사용할 수 있습니다.'));
@@ -1178,27 +1197,63 @@
         });
       }
 
-      saveSettingsButton.addEventListener('click', async () => {
-        if (!selectedAgent || saveSettingsButton.disabled) return;
-        saveSettingsButton.disabled = true;
-        saveSettingsButton.textContent = '저장 중';
-        try {
-          const avatar = await readAvatarFile();
-          const res = await fetch('/api/agent/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agentId: selectedAgent, displayName: displayNameInput.value, avatar }),
+      function renderEditor() {
+        editorList.innerHTML = '';
+        for (const agent of latestAgents) {
+          const card = document.createElement('div');
+          card.className = 'editor-card';
+          const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : `${agent.orb || agent.name.slice(0, 1)}`;
+          card.innerHTML = `
+            <div class="editor-orb">${orbContent}</div>
+            <div class="editor-fields">
+              <div class="editor-name">${escapeHtml(agent.id)}</div>
+              <input class="settings-input" value="${escapeHtml(agent.name)}" data-role="name" />
+              <input class="avatar-input" type="file" accept="image/*" data-role="avatar" />
+            </div>
+            <button class="recover-button" type="button">저장</button>`;
+          const saveButton = card.querySelector('button');
+          saveButton.addEventListener('click', async () => {
+            saveButton.disabled = true;
+            saveButton.textContent = '저장 중';
+            try {
+              const displayName = card.querySelector('[data-role="name"]').value;
+              const file = card.querySelector('[data-role="avatar"]').files[0];
+              const avatar = await readFileAsDataUrl(file);
+              const res = await fetch('/api/agent/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agentId: agent.id, displayName, avatar }),
+              });
+              const payload = await res.json();
+              if (!payload.ok) throw new Error(payload.error || '저장 실패');
+              await loadAgents();
+              renderEditor();
+            } catch (error) {
+              alert(`설정 저장 실패: ${error}`);
+            } finally {
+              saveButton.disabled = false;
+              saveButton.textContent = '저장';
+            }
           });
-          const payload = await res.json();
-          if (!payload.ok) throw new Error(payload.error || '저장 실패');
-          appendSystemMessage('표시 이름/볼 이미지를 저장했습니다.');
-          await loadAgents();
-        } catch (error) {
-          appendSystemMessage(`설정 저장 실패: ${error}`);
-        } finally {
-          saveSettingsButton.disabled = false;
-          saveSettingsButton.textContent = '저장';
+          editorList.appendChild(card);
         }
+      }
+
+      function openEditor() {
+        renderEditor();
+        editBackdrop.classList.add('open');
+        editBackdrop.setAttribute('aria-hidden', 'false');
+      }
+
+      function closeEditor() {
+        editBackdrop.classList.remove('open');
+        editBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
+      editAgentsButton.addEventListener('click', openEditor);
+      editClose.addEventListener('click', closeEditor);
+      editBackdrop.addEventListener('click', (event) => {
+        if (event.target === editBackdrop) closeEditor();
       });
 
       detailButton.addEventListener('click', async () => {
