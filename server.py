@@ -411,6 +411,99 @@ def summarize_agents() -> dict[str, Any]:
     }
 
 
+def html_escape(value: Any) -> str:
+    return (
+        str(value if value is not None else "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def state_label(state: str) -> str:
+    if state == "working":
+        return "작업중"
+    if state == "warning":
+        return "점검"
+    return "대기"
+
+
+def state_badge_class(state: str) -> str:
+    if state == "working":
+        return "work"
+    if state == "warning":
+        return "warn"
+    return "idle"
+
+
+def render_agent_card(agent: dict[str, Any]) -> str:
+    state = str(agent.get("state") or "idle")
+    name = html_escape(agent.get("name") or agent.get("id") or "agent")
+    orb = html_escape(agent.get("orb") or name[:1])
+    detail = html_escape(agent.get("detail") or agent.get("statusText") or "상태 확인 중")
+    working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 작업 없음"
+    tags = [agent.get("role"), working_tag, *(agent.get("tags") or []), agent.get("id")]
+    tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
+    badge = state_label(state)
+    badge_class = state_badge_class(state)
+    work_class = "" if state == "idle" else "work"
+    warn_class = "warn" if state == "warning" else ""
+    accent = "idle" if state == "idle" else "work"
+    return f"""
+            <article class="agent {work_class} {warn_class}" role="button" tabindex="0" data-agent="{name}" data-state="{html_escape(agent.get('statusText') or '상태 확인 중')}" data-accent="{accent}" data-agent-id="{html_escape(agent.get('id'))}">
+              <span class="state-badge {badge_class}">{badge}</span>
+              <div class="orb">{orb}</div>
+              <div>
+                <div class="name">{name} <span class="pill">{badge}</span></div>
+                <div class="status">{detail}</div>
+                <div class="tag-row">{tag_html}</div>
+              </div>
+            </article>"""
+
+
+def replace_between(source: str, start: str, end: str, replacement: str) -> str:
+    start_index = source.index(start) + len(start)
+    end_index = source.index(end, start_index)
+    return source[:start_index] + replacement + source[end_index:]
+
+
+def render_initial_page() -> bytes:
+    html = (ROOT / "index.html").read_text()
+    try:
+        payload = summarize_agents()
+        agents = payload.get("agents") if isinstance(payload, dict) else []
+        counts = payload.get("counts") if isinstance(payload, dict) else {}
+        idle = [a for a in agents if a.get("state") == "idle"]
+        active = [a for a in agents if a.get("state") != "idle"]
+        idle_html = "\n".join(render_agent_card(a) for a in idle) or '<article class="agent"><div class="orb">✓</div><div><div class="name">대기 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>'
+        active_html = "\n".join(render_agent_card(a) for a in active) or '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 실행 중인 에이전트가 없습니다.</div></div></article>'
+        html = replace_between(
+            html,
+            '<div class="agent-grid" id="idleAgents">',
+            '</div>\n        </section>\n\n        <section class="lane working">',
+            "\n" + idle_html + "\n          ",
+        )
+        html = replace_between(
+            html,
+            '<div class="agent-grid" id="workingAgents">',
+            '</div>\n        </section>\n      </section>',
+            "\n" + active_html + "\n          ",
+        )
+        total = counts.get("total", len(agents))
+        idle_count = counts.get("idle", len(idle))
+        active_count = (counts.get("working") or 0) + (counts.get("warning") or 0)
+        html = html.replace('<strong id="countTotal">-</strong>', f'<strong id="countTotal">{html_escape(total)}</strong>')
+        html = html.replace('<strong id="countIdle">-</strong>', f'<strong id="countIdle">{html_escape(idle_count)}</strong>')
+        html = html.replace('<strong id="countWorking">-</strong>', f'<strong id="countWorking">{html_escape(active_count)}</strong>')
+        html = html.replace('<div class="count" id="idleLabel">대기 에이전트</div>', f'<div class="count" id="idleLabel">{html_escape(idle_count)} 대기</div>')
+        html = html.replace('<div class="count" id="workingLabel">작업 에이전트</div>', f'<div class="count" id="workingLabel">{html_escape(active_count)} 작업/점검</div>')
+    except Exception:
+        pass
+    return html.encode("utf-8")
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -431,6 +524,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path = self.path.split("?", 1)[0]
+        if path in {"/", "/index.html"}:
+            body = render_initial_page()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/chat/history":
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
