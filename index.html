@@ -495,9 +495,9 @@
       </header>
 
       <section class="summary" aria-label="요약">
-        <div class="metric"><strong>3</strong><span>등록된 에이전트</span></div>
-        <div class="metric"><strong>2</strong><span>대기 중</span></div>
-        <div class="metric"><strong>1</strong><span>작업 중</span></div>
+        <div class="metric"><strong id="countTotal">-</strong><span>등록된 에이전트</span></div>
+        <div class="metric"><strong id="countIdle">-</strong><span>대기 중</span></div>
+        <div class="metric"><strong id="countWorking">-</strong><span>작업 중 / 확인 필요</span></div>
       </section>
 
       <section class="board" aria-label="에이전트 상태 보드">
@@ -506,44 +506,25 @@
         <section class="lane idle">
           <div class="lane-head">
             <div class="lane-title"><span class="dot"></span>대기</div>
-            <div class="count">idle agents</div>
+            <div class="count" id="idleLabel">idle agents</div>
           </div>
-          <div class="agent-grid">
-            <article class="agent" role="button" tabindex="0" data-agent="밀레느" data-state="대기" data-accent="idle">
-              <div class="orb">밀</div>
-              <div>
-                <div class="name">밀레느 <span class="pill">idle</span></div>
-                <div class="status">명령을 기다리는 중입니다. 새 작업이 오면 오른쪽 작업중 칸으로 이동합니다.</div>
-              </div>
-            </article>
-            <article class="agent" role="button" tabindex="0" data-agent="미디어" data-state="대기" data-accent="idle">
-              <div class="orb">미</div>
-              <div>
-                <div class="name">미디어 <span class="pill">paused</span></div>
-                <div class="status">콘텐츠 자동화는 안정화를 위해 대기 상태입니다.</div>
-              </div>
-            </article>
+          <div class="agent-grid" id="idleAgents">
+            <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 세션 상태를 읽고 있습니다.</div></div></article>
           </div>
         </section>
 
         <section class="lane working">
           <div class="lane-head">
             <div class="lane-title"><span class="dot"></span>작업중</div>
-            <div class="count">active agents</div>
+            <div class="count" id="workingLabel">active agents</div>
           </div>
-          <div class="agent-grid">
-            <article class="agent work warn" role="button" tabindex="0" data-agent="observer" data-state="작업중" data-accent="work">
-              <div class="orb">옵</div>
-              <div>
-                <div class="name">observer <span class="pill">building</span></div>
-                <div class="status">옵저버 사이트를 구성 중입니다. 지연되면 붉은 테두리로 경고합니다.</div>
-              </div>
-            </article>
+          <div class="agent-grid" id="workingAgents">
+            <article class="agent work"><div class="orb">…</div><div><div class="name">대기 중</div><div class="status">작업 중인 에이전트를 기다립니다.</div></div></article>
           </div>
         </section>
       </section>
 
-      <p class="hint">다음 단계: 실제 OpenClaw 세션 상태와 연결해 에이전트 orb가 자동으로 좌우 이동하도록 만듭니다.</p>
+      <p class="hint">실제 OpenClaw 세션 상태를 10초마다 읽어와 에이전트 orb를 대기/작업중 칸으로 이동합니다.</p>
 
       <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
         <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
@@ -581,17 +562,88 @@
       const body = document.getElementById('chatBody');
       const form = document.getElementById('chatForm');
       const input = document.getElementById('chatInput');
+      const idleAgents = document.getElementById('idleAgents');
+      const workingAgents = document.getElementById('workingAgents');
+      const countTotal = document.getElementById('countTotal');
+      const countIdle = document.getElementById('countIdle');
+      const countWorking = document.getElementById('countWorking');
+      const idleLabel = document.getElementById('idleLabel');
+      const workingLabel = document.getElementById('workingLabel');
       let selectedAgent = 'observer';
+      let latestAgents = [];
+
+      function stateLabel(state) {
+        if (state === 'working') return 'working';
+        if (state === 'warning') return 'check';
+        return 'idle';
+      }
+
+      function agentCard(agent) {
+        const card = document.createElement('article');
+        card.className = `agent ${agent.state === 'idle' ? '' : 'work'} ${agent.state === 'warning' ? 'warn' : ''}`.trim();
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
+        card.dataset.agent = agent.name;
+        card.dataset.state = agent.statusText || '상태 확인 중';
+        card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
+        card.dataset.agentId = agent.id;
+        card.innerHTML = `
+          <div class="orb">${agent.orb || agent.name.slice(0, 1)}</div>
+          <div>
+            <div class="name">${agent.name} <span class="pill">${stateLabel(agent.state)}</span></div>
+            <div class="status">${agent.detail || agent.statusText || '상태 확인 중'}</div>
+          </div>`;
+        card.addEventListener('click', () => openChat(card));
+        card.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openChat(card);
+          }
+        });
+        return card;
+      }
+
+      function renderAgents(payload) {
+        const agents = payload.agents || [];
+        latestAgents = agents;
+        const counts = payload.counts || { total: agents.length, idle: 0, working: 0, warning: 0 };
+        countTotal.textContent = counts.total ?? agents.length;
+        countIdle.textContent = counts.idle ?? agents.filter((a) => a.state === 'idle').length;
+        countWorking.textContent = (counts.working || 0) + (counts.warning || 0);
+        idleLabel.textContent = `${countIdle.textContent} idle`;
+        workingLabel.textContent = `${countWorking.textContent} active/check`;
+
+        idleAgents.innerHTML = '';
+        workingAgents.innerHTML = '';
+        const idle = agents.filter((agent) => agent.state === 'idle');
+        const active = agents.filter((agent) => agent.state !== 'idle');
+        for (const agent of idle) idleAgents.appendChild(agentCard(agent));
+        for (const agent of active) workingAgents.appendChild(agentCard(agent));
+        if (!idle.length) idleAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">대기 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>';
+        if (!active.length) workingAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 실행 중인 에이전트가 없습니다.</div></div></article>';
+      }
+
+      async function loadAgents() {
+        try {
+          const res = await fetch('/api/agents', { cache: 'no-store' });
+          const payload = await res.json();
+          if (!payload.ok) throw new Error(payload.error || '상태 조회 실패');
+          renderAgents(payload);
+        } catch (error) {
+          workingAgents.innerHTML = `<article class="agent work warn"><div class="orb">!</div><div><div class="name">상태 조회 실패 <span class="pill">check</span></div><div class="status">${String(error)}</div></div></article>`;
+        }
+      }
 
       function openChat(card) {
         selectedAgent = card.dataset.agent || 'agent';
         const state = card.dataset.state || '상태 확인 중';
         const accent = card.dataset.accent || 'idle';
+        const agent = latestAgents.find((item) => item.name === selectedAgent || item.id === card.dataset.agentId);
         title.textContent = `${selectedAgent} 대화`;
         subtitle.textContent = `${state} · 업무 전달 창`;
-        orb.textContent = selectedAgent.slice(0, 1);
+        orb.textContent = (agent && agent.orb) || selectedAgent.slice(0, 1);
         orb.classList.toggle('work', accent === 'work');
-        body.innerHTML = `<div class="message system"><strong>${selectedAgent}</strong>에게 전달할 업무를 입력하세요.</div>`;
+        body.innerHTML = `<div class="message system"><strong>${selectedAgent}</strong> 현재 상태: ${agent ? agent.detail : state}</div><div class="message system">업무 전달은 다음 단계에서 인증된 전송 API로 연결합니다.</div>`;
         backdrop.classList.add('open');
         backdrop.setAttribute('aria-hidden', 'false');
         setTimeout(() => input.focus(), 50);
@@ -601,16 +653,6 @@
         backdrop.classList.remove('open');
         backdrop.setAttribute('aria-hidden', 'true');
       }
-
-      document.querySelectorAll('.agent').forEach((card) => {
-        card.addEventListener('click', () => openChat(card));
-        card.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            openChat(card);
-          }
-        });
-      });
 
       closeBtn.addEventListener('click', closeChat);
       backdrop.addEventListener('click', (event) => {
@@ -630,11 +672,14 @@
         body.appendChild(user);
         const system = document.createElement('div');
         system.className = 'message system';
-        system.textContent = `${selectedAgent} 전송 API 연결 전입니다. 다음 단계에서 인증 후 실제 전달됩니다.`;
+        system.textContent = `${selectedAgent} 전송 API 연결 전입니다. 다음 단계에서 실제 전달됩니다.`;
         body.appendChild(system);
         input.value = '';
         body.scrollTop = body.scrollHeight;
       });
+
+      loadAgents();
+      window.setInterval(loadAgents, 10000);
     </script>
   </body>
 </html>
