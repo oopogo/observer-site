@@ -905,7 +905,7 @@
         if (!summary.total) return '';
         const dots = (summary.recent || []).slice(0, 12).map((item) => `<span class="sub-dot ${escapeHtml(item.state || 'done')}" title="${escapeHtml(item.status || '')} · ${escapeHtml(item.staleSeconds || 0)}초 전"></span>`).join('');
         const hidden = summary.hiddenTotal ? ` · 숨김 ${summary.hiddenTotal}` : '';
-        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">하위 작업 ${summary.total || 0} · 진행 ${summary.working || 0} · 지연 ${summary.lag || 0} · 실패 ${summary.failed || 0}${hidden}</div></div>`;
+        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">실행 중 하위 작업 ${summary.total || 0} · 정상 ${summary.working || 0} · 지연 ${summary.lag || 0}${hidden}</div></div>`;
       }
 
       function renderTags(agent) {
