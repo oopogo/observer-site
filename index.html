@@ -264,6 +264,56 @@
 
       .agent:hover { transform: translateY(-3px); background: var(--panel-strong); }
 
+      .state-badge {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid rgba(105, 215, 255, 0.32);
+        border-radius: 999px;
+        padding: 5px 9px;
+        color: #dff7ff;
+        background: rgba(105, 215, 255, 0.11);
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: -0.01em;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+      }
+
+      .state-badge::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--idle);
+        box-shadow: 0 0 12px var(--idle);
+      }
+
+      .state-badge.work {
+        border-color: rgba(255, 184, 107, 0.38);
+        color: #ffe1b7;
+        background: rgba(255, 184, 107, 0.12);
+      }
+
+      .state-badge.work::before {
+        background: var(--work);
+        box-shadow: 0 0 12px var(--work);
+      }
+
+      .state-badge.warn {
+        border-color: rgba(255, 107, 138, 0.46);
+        color: #ffd0da;
+        background: rgba(255, 107, 138, 0.13);
+      }
+
+      .state-badge.warn::before {
+        background: var(--danger);
+        box-shadow: 0 0 12px var(--danger);
+      }
+
       .orb {
         width: 70px;
         height: 70px;
@@ -731,6 +781,12 @@
         body.scrollTop = body.scrollHeight;
       }
 
+      function stateBadgeClass(state) {
+        if (state === 'working') return 'work';
+        if (state === 'warning') return 'warn';
+        return 'idle';
+      }
+
       function renderTags(agent) {
         const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : '현재 작업 없음';
         const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
@@ -747,6 +803,7 @@
         card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
         card.dataset.agentId = agent.id;
         card.innerHTML = `
+          <span class="state-badge ${stateBadgeClass(agent.state)}">${stateLabel(agent.state)}</span>
           <div class="orb">${agent.orb || agent.name.slice(0, 1)}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state)}</span></div>
