@@ -24,9 +24,9 @@ DATA_DIR = ROOT / ".data"
 HISTORY_PATH = DATA_DIR / "chat-history.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
-    {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트"},
-    {"id": "observer", "name": "observer", "orb": "옵", "role": "운영 감시자"},
-    {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서"},
+    {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
+    {"id": "observer", "name": "observer", "orb": "옵", "role": "운영 감시자", "tags": ["OPS", "GATEWAY", "감시"]},
+    {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
 
 
@@ -215,6 +215,38 @@ def normalize_status(raw: str | None) -> str:
     return "idle"
 
 
+def summarize_gateway_status() -> dict[str, Any]:
+    args = [OPENCLAW_BIN, "gateway", "status"]
+    env = os.environ.copy()
+    env.pop("OPENCLAW_GATEWAY_URL", None)
+    env.pop("OPENCLAW_API_URL", None)
+    env["NO_COLOR"] = "1"
+    generated = int(time.time() * 1000)
+    started = time.time()
+    result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=14)
+    elapsed_ms = int((time.time() - started) * 1000)
+    raw = (result.stdout or result.stderr or "").strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    runtime = next((line for line in lines if line.startswith("Runtime:")), "Runtime: unknown")
+    probe = next((line for line in lines if line.startswith("Connectivity probe:")), "Connectivity probe: unknown")
+    gateway = next((line for line in lines if line.startswith("Gateway:")), "Gateway: unknown")
+    listening = next((line for line in lines if line.startswith("Listening:")), None)
+    log_line = next((line for line in lines if line.startswith("File logs:")), None)
+    ok = result.returncode == 0 and "running" in runtime.lower() and "ok" in probe.lower()
+    return {
+        "ok": ok,
+        "state": "ok" if ok else "warning",
+        "generatedAt": generated,
+        "latencyMs": elapsed_ms,
+        "runtime": runtime.replace("Runtime:", "", 1).strip(),
+        "probe": probe.replace("Connectivity probe:", "", 1).strip(),
+        "gateway": gateway.replace("Gateway:", "", 1).strip(),
+        "listening": listening.replace("Listening:", "", 1).strip() if listening else None,
+        "logs": log_line.replace("File logs:", "", 1).strip() if log_line else None,
+        "raw": lines[:18],
+    }
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sessions_data = gateway_call("sessions.list", timeout=8)
@@ -315,6 +347,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # keep UI alive with a clear read-only error
                 payload = {"ok": False, "error": str(exc), "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
                 code = 502
+            self.json_response(payload, code)
+            return
+        if path == "/api/gateway-status":
+            try:
+                payload = summarize_gateway_status()
+                code = 200 if payload.get("ok") else 503
+            except Exception as exc:
+                payload = {"ok": False, "state": "warning", "error": str(exc), "generatedAt": int(time.time() * 1000)}
+                code = 503
             self.json_response(payload, code)
             return
         super().do_GET()
