@@ -576,7 +576,7 @@
     <main class="shell">
       <header>
         <div>
-          <div class="eyebrow">observer control surface</div>
+          <div class="eyebrow">옵저버 관제 화면</div>
           <h1>에이전트 관리</h1>
         </div>
         <nav class="tabs" aria-label="옵저버 사이트 탭">
@@ -586,27 +586,27 @@
 
       <section class="gateway-strip" aria-label="게이트웨이 상태">
         <div class="gateway-card" id="gatewayRuntimeCard">
-          <div class="gateway-label"><span class="status-light"></span>Gateway</div>
+          <div class="gateway-label"><span class="status-light"></span>게이트웨이</div>
           <div class="gateway-value" id="gatewayRuntime">상태 확인 중</div>
         </div>
         <div class="gateway-card" id="gatewayProbeCard">
-          <div class="gateway-label">Probe</div>
+          <div class="gateway-label">연결 확인</div>
           <div class="gateway-value" id="gatewayProbe">-</div>
         </div>
         <div class="gateway-card">
-          <div class="gateway-label">Endpoint</div>
+          <div class="gateway-label">접속 주소</div>
           <div class="gateway-value small" id="gatewayEndpoint">-</div>
         </div>
         <div class="gateway-card">
-          <div class="gateway-label">Latency</div>
+          <div class="gateway-label">응답 시간</div>
           <div class="gateway-value" id="gatewayLatency">-</div>
         </div>
       </section>
 
       <section class="summary" aria-label="요약">
-        <div class="metric"><strong id="countTotal">-</strong><span>등록된 에이전트</span></div>
+        <div class="metric"><strong id="countTotal">-</strong><span>전체 에이전트</span></div>
         <div class="metric"><strong id="countIdle">-</strong><span>대기 중</span></div>
-        <div class="metric"><strong id="countWorking">-</strong><span>작업 중 / 확인 필요</span></div>
+        <div class="metric"><strong id="countWorking">-</strong><span>작업 중 / 점검 필요</span></div>
       </section>
 
       <section class="board" aria-label="에이전트 상태 보드">
@@ -615,7 +615,7 @@
         <section class="lane idle">
           <div class="lane-head">
             <div class="lane-title"><span class="dot"></span>대기</div>
-            <div class="count" id="idleLabel">idle agents</div>
+            <div class="count" id="idleLabel">대기 에이전트</div>
           </div>
           <div class="agent-grid" id="idleAgents">
             <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 세션 상태를 읽고 있습니다.</div></div></article>
@@ -625,7 +625,7 @@
         <section class="lane working">
           <div class="lane-head">
             <div class="lane-title"><span class="dot"></span>작업중</div>
-            <div class="count" id="workingLabel">active agents</div>
+            <div class="count" id="workingLabel">작업 에이전트</div>
           </div>
           <div class="agent-grid" id="workingAgents">
             <article class="agent work"><div class="orb">…</div><div><div class="name">대기 중</div><div class="status">작업 중인 에이전트를 기다립니다.</div></div></article>
@@ -633,7 +633,7 @@
         </section>
       </section>
 
-      <p class="hint">실제 OpenClaw 세션 상태를 10초마다 읽어와 에이전트 orb를 대기/작업중 칸으로 이동합니다.</p>
+      <p class="hint">실제 OpenClaw 세션 상태를 10초마다 실제 OpenClaw 상태를 읽어와 에이전트를 대기/작업중 칸으로 이동합니다.</p>
 
       <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
         <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
@@ -760,8 +760,8 @@
         countTotal.textContent = counts.total ?? agents.length;
         countIdle.textContent = counts.idle ?? agents.filter((a) => a.state === 'idle').length;
         countWorking.textContent = (counts.working || 0) + (counts.warning || 0);
-        idleLabel.textContent = `${countIdle.textContent} idle`;
-        workingLabel.textContent = `${countWorking.textContent} active/check`;
+        idleLabel.textContent = `${countIdle.textContent} 대기`;
+        workingLabel.textContent = `${countWorking.textContent} active/점검`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
@@ -773,12 +773,27 @@
         if (!active.length) workingAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 실행 중인 에이전트가 없습니다.</div></div></article>';
       }
 
+      function koreanRuntime(text) {
+        return String(text || '실행 중')
+          .replace('running', '실행 중')
+          .replace('state active', '상태 활성')
+          .replace('sub running', '하위 프로세스 실행 중')
+          .replace('last exit', '마지막 종료 코드')
+          .replace('reason', '사유');
+      }
+
+      function koreanProbe(text) {
+        const value = String(text || '알 수 없음');
+        if (value.toLowerCase() === 'ok') return '정상';
+        return value.replace('unknown', '알 수 없음');
+      }
+
       function renderGatewayStatus(payload) {
         const ok = Boolean(payload && payload.ok);
         gatewayRuntimeCard.classList.toggle('warn', !ok);
         gatewayProbeCard.classList.toggle('warn', !ok);
-        gatewayRuntime.textContent = ok ? `정상 · ${payload.runtime || 'running'}` : `확인 필요 · ${payload.error || payload.runtime || 'unknown'}`;
-        gatewayProbe.textContent = payload.probe || (ok ? 'ok' : 'unknown');
+        gatewayRuntime.textContent = ok ? `정상 · ${koreanRuntime(payload.runtime)}` : `점검 필요 · ${payload.error || koreanRuntime(payload.runtime) || '알 수 없음'}`;
+        gatewayProbe.textContent = koreanProbe(payload.probe || (ok ? 'ok' : 'unknown'));
         gatewayEndpoint.textContent = payload.listening || payload.gateway || '127.0.0.1:18789';
         gatewayLatency.textContent = typeof payload.latencyMs === 'number' ? `${payload.latencyMs}ms` : '-';
       }
