@@ -35,6 +35,7 @@ CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
 NUDGE_INTERVAL_SECONDS = 900
+ACTIVE_SESSION_MAX_STALE_MS = 30 * 60 * 1000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -448,10 +449,19 @@ def summarize_agents() -> dict[str, Any]:
         agent_sessions = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
         agent_sessions.sort(key=lambda s: to_epoch_ms(s.get("updatedAt") or s.get("startedAt")), reverse=True)
         active = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "working"]
+        recent_active = []
+        stale_active = []
+        for session in active:
+            updated = to_epoch_ms(session.get("updatedAt") or session.get("startedAt"))
+            session_stale_ms = max(0, now - updated) if updated else ACTIVE_SESSION_MAX_STALE_MS + 1
+            if session_stale_ms <= ACTIVE_SESSION_MAX_STALE_MS:
+                recent_active.append(session)
+            else:
+                stale_active.append(session)
         latest = agent_sessions[0] if agent_sessions else None
-        current = active[0] if active else latest
+        current = recent_active[0] if recent_active else latest
 
-        state = "working" if active else "idle"
+        state = "working" if recent_active else "idle"
         current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else 0
         current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
         age_ms = max(0, now - current_started) if current_started else 0
@@ -461,7 +471,7 @@ def summarize_agents() -> dict[str, Any]:
         # 현재 작업중 여부는 running/queued/processing 세션을 우선한다.
         # 실행 중 세션의 갱신 지연만으로는 점검 처리하지 않는다.
         # 점검은 명시적인 실패/오류/중단 상태가 최근에 관측될 때만 표시한다.
-        is_lagging = bool(active and stale_ms >= 180_000)
+        is_lagging = bool(recent_active and stale_ms >= 180_000)
         if not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
             state = "warning"
 
@@ -476,11 +486,12 @@ def summarize_agents() -> dict[str, Any]:
         if current:
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"
-            if active:
+            if recent_active:
                 lag_note = " · 응답 지연 가능" if is_lagging else ""
                 detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전{lag_note} · {model} · {total_tokens:,} tokens"
             else:
-                detail = f"현재 작업 없음 · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
+                stale_note = f" · 오래된 running 세션 {len(stale_active)}개 무시" if stale_active else ""
+                detail = f"현재 작업 없음{stale_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
         agent_payload = {
             **base,
@@ -488,8 +499,9 @@ def summarize_agents() -> dict[str, Any]:
             "statusText": status_text,
             "detail": detail,
             "sessionCount": len(agent_sessions),
-            "activeSessionCount": len(active),
-            "isWorkingNow": bool(active),
+            "activeSessionCount": len(recent_active),
+            "staleActiveSessionCount": len(stale_active),
+            "isWorkingNow": bool(recent_active),
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
