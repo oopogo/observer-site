@@ -324,6 +324,156 @@
         100% { top: 92%; opacity: 0; }
       }
 
+
+      .agent { cursor: pointer; }
+      .agent:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.86);
+        outline-offset: 4px;
+      }
+
+      .chat-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(0, 0, 0, 0.58);
+        backdrop-filter: blur(14px);
+      }
+
+      .chat-backdrop.open { display: flex; }
+
+      .chat-panel {
+        width: min(720px, 100%);
+        max-height: min(760px, calc(100vh - 36px));
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 30px;
+        background: rgba(10, 14, 24, 0.94);
+        box-shadow: 0 30px 120px rgba(0, 0, 0, 0.58);
+      }
+
+      .chat-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 18px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .chat-agent {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .mini-orb {
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        color: #061019;
+        font-weight: 900;
+        background: radial-gradient(circle at 32% 24%, #fff, var(--idle) 38%, #1b8eb8 100%);
+        box-shadow: 0 0 26px rgba(105, 215, 255, 0.32);
+      }
+
+      .mini-orb.work {
+        background: radial-gradient(circle at 32% 24%, #fff, var(--work) 38%, #c66a1f 100%);
+        box-shadow: 0 0 30px rgba(255, 184, 107, 0.42);
+      }
+
+      .chat-title { font-weight: 850; letter-spacing: -0.03em; }
+      .chat-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+
+      .chat-close {
+        width: 38px;
+        height: 38px;
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 999px;
+        color: var(--text);
+        background: rgba(255,255,255,.06);
+        cursor: pointer;
+        font-size: 22px;
+      }
+
+      .chat-body {
+        min-height: 320px;
+        overflow: auto;
+        padding: 20px;
+      }
+
+      .message {
+        width: fit-content;
+        max-width: 82%;
+        margin-bottom: 12px;
+        padding: 12px 14px;
+        border-radius: 18px;
+        line-height: 1.48;
+        font-size: 14px;
+      }
+
+      .message.system {
+        color: #cbd6ea;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .message.user {
+        margin-left: auto;
+        color: #071018;
+        background: linear-gradient(135deg, #dff7ff, #9ee7ff);
+        font-weight: 700;
+      }
+
+      .chat-foot {
+        display: grid;
+        gap: 10px;
+        padding: 16px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .chat-input-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+      }
+
+      .chat-input {
+        min-height: 48px;
+        max-height: 120px;
+        resize: vertical;
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 17px;
+        padding: 13px 14px;
+        color: var(--text);
+        background: rgba(255,255,255,.065);
+        font: inherit;
+      }
+
+      .chat-send {
+        border: 0;
+        border-radius: 17px;
+        padding: 0 18px;
+        color: #071018;
+        background: linear-gradient(135deg, #fff2cf, #ffb86b);
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .chat-note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
       @media (max-width: 820px) {
         header { align-items: start; flex-direction: column; }
         .summary, .board { grid-template-columns: 1fr; }
@@ -359,14 +509,14 @@
             <div class="count">idle agents</div>
           </div>
           <div class="agent-grid">
-            <article class="agent">
+            <article class="agent" role="button" tabindex="0" data-agent="밀레느" data-state="대기" data-accent="idle">
               <div class="orb">밀</div>
               <div>
                 <div class="name">밀레느 <span class="pill">idle</span></div>
                 <div class="status">명령을 기다리는 중입니다. 새 작업이 오면 오른쪽 작업중 칸으로 이동합니다.</div>
               </div>
             </article>
-            <article class="agent">
+            <article class="agent" role="button" tabindex="0" data-agent="미디어" data-state="대기" data-accent="idle">
               <div class="orb">미</div>
               <div>
                 <div class="name">미디어 <span class="pill">paused</span></div>
@@ -382,7 +532,7 @@
             <div class="count">active agents</div>
           </div>
           <div class="agent-grid">
-            <article class="agent work warn">
+            <article class="agent work warn" role="button" tabindex="0" data-agent="observer" data-state="작업중" data-accent="work">
               <div class="orb">옵</div>
               <div>
                 <div class="name">observer <span class="pill">building</span></div>
@@ -394,6 +544,97 @@
       </section>
 
       <p class="hint">다음 단계: 실제 OpenClaw 세션 상태와 연결해 에이전트 orb가 자동으로 좌우 이동하도록 만듭니다.</p>
+
+      <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
+        <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
+          <div class="chat-head">
+            <div class="chat-agent">
+              <div class="mini-orb" id="chatOrb">옵</div>
+              <div>
+                <div class="chat-title" id="chatTitle">observer 대화</div>
+                <div class="chat-subtitle" id="chatSubtitle">상태 확인 중</div>
+              </div>
+            </div>
+            <button class="chat-close" type="button" id="chatClose" aria-label="대화창 닫기">×</button>
+          </div>
+          <div class="chat-body" id="chatBody">
+            <div class="message system">에이전트를 선택하면 여기서 업무를 전달하게 됩니다.</div>
+          </div>
+          <form class="chat-foot" id="chatForm">
+            <div class="chat-input-row">
+              <textarea class="chat-input" id="chatInput" placeholder="업무 지시를 입력하세요. 예: 지금 상태 확인하고 보고해줘"></textarea>
+              <button class="chat-send" type="submit">보내기</button>
+            </div>
+            <div class="chat-note">현재는 화면 흐름 단계입니다. 다음 단계에서 인증을 붙인 뒤 실제 OpenClaw 에이전트 전송 API에 연결합니다.</div>
+          </form>
+        </section>
+      </div>
+
     </main>
+
+    <script>
+      const backdrop = document.getElementById('chatBackdrop');
+      const closeBtn = document.getElementById('chatClose');
+      const title = document.getElementById('chatTitle');
+      const subtitle = document.getElementById('chatSubtitle');
+      const orb = document.getElementById('chatOrb');
+      const body = document.getElementById('chatBody');
+      const form = document.getElementById('chatForm');
+      const input = document.getElementById('chatInput');
+      let selectedAgent = 'observer';
+
+      function openChat(card) {
+        selectedAgent = card.dataset.agent || 'agent';
+        const state = card.dataset.state || '상태 확인 중';
+        const accent = card.dataset.accent || 'idle';
+        title.textContent = `${selectedAgent} 대화`;
+        subtitle.textContent = `${state} · 업무 전달 창`;
+        orb.textContent = selectedAgent.slice(0, 1);
+        orb.classList.toggle('work', accent === 'work');
+        body.innerHTML = `<div class="message system"><strong>${selectedAgent}</strong>에게 전달할 업무를 입력하세요.</div>`;
+        backdrop.classList.add('open');
+        backdrop.setAttribute('aria-hidden', 'false');
+        setTimeout(() => input.focus(), 50);
+      }
+
+      function closeChat() {
+        backdrop.classList.remove('open');
+        backdrop.setAttribute('aria-hidden', 'true');
+      }
+
+      document.querySelectorAll('.agent').forEach((card) => {
+        card.addEventListener('click', () => openChat(card));
+        card.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openChat(card);
+          }
+        });
+      });
+
+      closeBtn.addEventListener('click', closeChat);
+      backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) closeChat();
+      });
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeChat();
+      });
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        const user = document.createElement('div');
+        user.className = 'message user';
+        user.textContent = text;
+        body.appendChild(user);
+        const system = document.createElement('div');
+        system.className = 'message system';
+        system.textContent = `${selectedAgent} 전송 API 연결 전입니다. 다음 단계에서 인증 후 실제 전달됩니다.`;
+        body.appendChild(system);
+        input.value = '';
+        body.scrollTop = body.scrollHeight;
+      });
+    </script>
   </body>
 </html>
