@@ -329,10 +329,18 @@
         border-radius: 50%;
         display: grid;
         place-items: center;
+        overflow: hidden;
         font-weight: 900;
         color: #061019;
         background: radial-gradient(circle at 32% 24%, #fff, var(--idle) 35%, #1b8eb8 100%);
         box-shadow: 0 0 0 7px rgba(105, 215, 255, 0.08), 0 0 34px rgba(105, 215, 255, 0.38);
+      }
+
+      .orb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 50%;
       }
 
       .agent.work {
@@ -683,11 +691,28 @@
         border-color: rgba(255, 107, 138, 0.34);
       }
 
-      .ops-row {
+      .ops-row, .settings-row {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
+
+      .settings-row {
+        grid-template-columns: 1fr auto auto;
+      }
+
+      .settings-input, .avatar-input {
+        min-height: 40px;
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 14px;
+        padding: 8px 10px;
+        color: var(--text);
+        background: rgba(255,255,255,.065);
+        font: inherit;
+        font-size: 13px;
+      }
+
+      .avatar-input { max-width: 150px; }
 
       .session-detail {
         max-height: 190px;
@@ -807,6 +832,11 @@
             <div class="message system">에이전트를 선택하면 여기서 업무를 전달하게 됩니다.</div>
           </div>
           <form class="chat-foot" id="chatForm">
+            <div class="settings-row">
+              <input class="settings-input" id="displayNameInput" placeholder="표시 이름" />
+              <input class="avatar-input" id="avatarInput" type="file" accept="image/*" />
+              <button class="recover-button" type="button" id="saveSettingsButton">저장</button>
+            </div>
             <div class="chat-input-row">
               <textarea class="chat-input" id="chatInput" placeholder="업무 지시를 입력하세요. 예: 지금 상태 확인하고 보고해줘"></textarea>
               <button class="chat-send" type="submit">보내기</button>
@@ -851,6 +881,9 @@
       const detailButton = document.getElementById('detailButton');
       const abortButton = document.getElementById('abortButton');
       const sessionDetail = document.getElementById('sessionDetail');
+      const displayNameInput = document.getElementById('displayNameInput');
+      const avatarInput = document.getElementById('avatarInput');
+      const saveSettingsButton = document.getElementById('saveSettingsButton');
       const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
@@ -923,9 +956,10 @@
         card.dataset.state = agent.statusText || '상태 확인 중';
         card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
         card.dataset.agentId = agent.id;
+        const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : `${agent.orb || agent.name.slice(0, 1)}`;
         card.innerHTML = `
           <span class="state-badge ${stateBadgeClass(agent.state, agent)}">${stateLabel(agent.state, agent)}</span>
-          <div class="orb">${agent.orb || agent.name.slice(0, 1)}</div>
+          <div class="orb">${orbContent}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
             <div class="status">${escapeHtml(agent.detail || agent.statusText || '상태 확인 중')}</div>
@@ -959,7 +993,7 @@
         for (const agent of idle) idleAgents.appendChild(agentCard(agent));
         for (const agent of active) workingAgents.appendChild(agentCard(agent));
         if (!idle.length) idleAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">응답 가능 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>';
-        if (!active.length) workingAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 생성 중인 에이전트가 없습니다.</div></div></article>';
+        if (!active.length) workingAgents.innerHTML = '';
       }
 
       function koreanRuntime(text) {
@@ -1052,6 +1086,8 @@
         const agent = latestAgents.find((item) => item.id === selectedAgent || item.name === card.dataset.agent);
         title.textContent = `${(agent && agent.name) || card.dataset.agent || selectedAgent} 대화`;
         subtitle.textContent = `${state} · 업무 전달 창`;
+        displayNameInput.value = (agent && agent.name) || card.dataset.agent || selectedAgent;
+        avatarInput.value = '';
         orb.textContent = (agent && agent.orb) || ((agent && agent.name) || selectedAgent).slice(0, 1);
         orb.classList.toggle('work', accent === 'work');
         backdrop.classList.add('open');
@@ -1127,6 +1163,43 @@
           button.textContent = original;
         }
       }
+
+
+      function readAvatarFile() {
+        return new Promise((resolve, reject) => {
+          const file = avatarInput.files && avatarInput.files[0];
+          if (!file) return resolve(null);
+          if (!file.type.startsWith('image/')) return reject(new Error('이미지 파일만 사용할 수 있습니다.'));
+          if (file.size > 2_000_000) return reject(new Error('이미지는 2MB 이하만 사용할 수 있습니다.'));
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(new Error('이미지를 읽지 못했습니다.'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      saveSettingsButton.addEventListener('click', async () => {
+        if (!selectedAgent || saveSettingsButton.disabled) return;
+        saveSettingsButton.disabled = true;
+        saveSettingsButton.textContent = '저장 중';
+        try {
+          const avatar = await readAvatarFile();
+          const res = await fetch('/api/agent/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: selectedAgent, displayName: displayNameInput.value, avatar }),
+          });
+          const payload = await res.json();
+          if (!payload.ok) throw new Error(payload.error || '저장 실패');
+          appendSystemMessage('표시 이름/볼 이미지를 저장했습니다.');
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`설정 저장 실패: ${error}`);
+        } finally {
+          saveSettingsButton.disabled = false;
+          saveSettingsButton.textContent = '저장';
+        }
+      });
 
       detailButton.addEventListener('click', async () => {
         sessionDetail.textContent = '세션 상세를 불러오는 중입니다...';

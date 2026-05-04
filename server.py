@@ -22,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / ".data"
 HISTORY_PATH = DATA_DIR / "chat-history.json"
+SETTINGS_PATH = DATA_DIR / "agent-settings.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -71,6 +72,52 @@ def stale_payload(name: str, error: Exception) -> dict[str, Any] | None:
     cached["stale"] = True
     cached["warning"] = f"최근 정상 상태를 표시 중입니다: {error}"
     return cached
+
+
+def load_agent_settings() -> dict[str, Any]:
+    try:
+        data = json.loads(SETTINGS_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_agent_settings(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def apply_agent_settings(agent: dict[str, Any]) -> dict[str, Any]:
+    settings = load_agent_settings().get(str(agent.get("id")), {})
+    if not isinstance(settings, dict):
+        settings = {}
+    merged = dict(agent)
+    display_name = settings.get("displayName")
+    if isinstance(display_name, str) and display_name.strip():
+        merged["name"] = display_name.strip()[:40]
+    avatar = settings.get("avatar")
+    if isinstance(avatar, str) and avatar.startswith("data:image/") and len(avatar) <= 2_000_000:
+        merged["avatar"] = avatar
+    return merged
+
+
+def save_single_agent_setting(agent_id: str, display_name: str | None, avatar: str | None) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    data = load_agent_settings()
+    current = data.get(agent_id, {}) if isinstance(data.get(agent_id), dict) else {}
+    if display_name is not None:
+        current["displayName"] = display_name.strip()[:40]
+    if avatar is not None:
+        if avatar and (not avatar.startswith("data:image/") or len(avatar) > 2_000_000):
+            raise ValueError("이미지는 2MB 이하의 이미지 파일만 사용할 수 있습니다.")
+        if avatar:
+            current["avatar"] = avatar
+        else:
+            current.pop("avatar", None)
+    data[agent_id] = current
+    save_agent_settings(data)
+    return {"ok": True, "agentId": agent_id, "settings": current}
 
 
 def parse_json_suffix(raw: str) -> Any:
@@ -496,7 +543,8 @@ def summarize_agents() -> dict[str, Any]:
         sessions = []
 
     output = []
-    for base in AGENTS:
+    for raw_base in AGENTS:
+        base = apply_agent_settings(raw_base)
         agent_sessions = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
         agent_sessions.sort(key=lambda s: to_epoch_ms(s.get("updatedAt") or s.get("startedAt")), reverse=True)
         active = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "working"]
@@ -610,6 +658,8 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     state = str(agent.get("state") or "idle")
     name = html_escape(agent.get("name") or agent.get("id") or "agent")
     orb = html_escape(agent.get("orb") or name[:1])
+    avatar = agent.get("avatar") if isinstance(agent.get("avatar"), str) else None
+    orb_html = f'<img src="{html_escape(avatar)}" alt="" />' if avatar else orb
     detail = html_escape(agent.get("detail") or agent.get("statusText") or "상태 확인 중")
     working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 생성 중 아님"
     lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
@@ -631,7 +681,7 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     return f"""
             <article class="agent {work_class} {lag_class} {warn_class}" role="button" tabindex="0" data-agent="{name}" data-state="{html_escape(agent.get('statusText') or '상태 확인 중')}" data-accent="{accent}" data-agent-id="{html_escape(agent.get('id'))}">
               <span class="state-badge {badge_class}">{badge}</span>
-              <div class="orb">{orb}</div>
+              <div class="orb">{orb_html}</div>
               <div>
                 <div class="name">{name} <span class="pill">{badge}</span></div>
                 <div class="status">{detail}</div>
@@ -656,7 +706,7 @@ def render_initial_page() -> bytes:
         idle = [a for a in agents if a.get("state") == "idle"]
         active = [a for a in agents if a.get("state") != "idle"]
         idle_html = "\n".join(render_agent_card(a) for a in idle) or '<article class="agent"><div class="orb">✓</div><div><div class="name">대기 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>'
-        active_html = "\n".join(render_agent_card(a) for a in active) or '<article class="agent"><div class="orb">✓</div><div><div class="name">작업중 없음</div><div class="status">현재 실행 중인 에이전트가 없습니다.</div></div></article>'
+        active_html = "\n".join(render_agent_card(a) for a in active)
         html = replace_between(
             html,
             '<div class="agent-grid" id="idleAgents">',
@@ -709,6 +759,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path == "/api/agent/settings":
+            self.json_response({"ok": True, "settings": load_agent_settings()})
             return
         if path == "/api/chat/history":
             from urllib.parse import parse_qs, urlparse
@@ -771,6 +824,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/abort":
                 result = abort_agent_session(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/settings":
+                result = save_single_agent_setting(agent_id, data.get("displayName"), data.get("avatar"))
                 self.json_response(result)
                 return
             self.json_response({"ok": False, "error": "not found"}, 404)
