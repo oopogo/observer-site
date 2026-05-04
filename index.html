@@ -238,12 +238,6 @@
         font-size: 13px;
       }
 
-      .refresh-note {
-        margin-top: 6px;
-        color: var(--muted);
-        font-size: 12px;
-      }
-
       .agent-grid {
         position: relative;
         z-index: 1;
@@ -434,13 +428,17 @@
         position: absolute;
         left: 50%;
         top: 6%;
-        width: 12px;
-        height: 12px;
+        width: 14px;
+        height: 14px;
         transform: translateX(-50%);
         border-radius: 999px;
         background: white;
-        box-shadow: 0 0 22px white;
-        animation: travel 3.5s ease-in-out infinite;
+        box-shadow: 0 0 22px white, 0 0 42px rgba(105, 215, 255, .48);
+        animation: travel 10s linear infinite;
+      }
+
+      .runner.refreshing {
+        animation: none;
       }
 
       .hint {
@@ -720,7 +718,6 @@
             <div class="lane-title"><span class="dot"></span>대기</div>
             <div class="count" id="idleLabel">대기 에이전트</div>
           </div>
-          <div class="refresh-note" id="agentRefreshNote">상태 갱신: 확인 중</div>
           <div class="agent-grid" id="idleAgents">
             <article class="agent"><div class="orb">…</div><div><div class="name">상태 불러오는 중</div><div class="status">OpenClaw 세션 상태를 읽고 있습니다.</div></div></article>
           </div>
@@ -784,7 +781,6 @@
       const input = document.getElementById('chatInput');
       const idleAgents = document.getElementById('idleAgents');
       const workingAgents = document.getElementById('workingAgents');
-      const agentRefreshNote = document.getElementById('agentRefreshNote');
       const gatewayRuntimeCard = document.getElementById('gatewayRuntimeCard');
       const gatewayProbeCard = document.getElementById('gatewayProbeCard');
       const gatewayRuntime = document.getElementById('gatewayRuntime');
@@ -804,7 +800,6 @@
       const sendButton = form.querySelector('.chat-send');
       let selectedAgent = 'observer';
       let latestAgents = [];
-      let lastAgentsGeneratedAt = 0;
       let sending = false;
       let historyPollTimer = null;
       const BUILD_ID = '2026-05-05-0814';
@@ -812,18 +807,6 @@
 
       function escapeHtml(text) {
         return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-      }
-
-      function secondsAgo(ts) {
-        if (!ts) return '확인 중';
-        const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-        if (diff < 60) return `${diff}초 전`;
-        const minutes = Math.floor(diff / 60);
-        return `${minutes}분 전`;
-      }
-
-      function updateAgentRefreshNote() {
-        agentRefreshNote.textContent = `상태 갱신: ${secondsAgo(lastAgentsGeneratedAt)} · 10초마다 자동 확인`;
       }
 
       function stateLabel(state, agent = null) {
@@ -896,8 +879,7 @@
       function renderAgents(payload) {
         const agents = payload.agents || [];
         latestAgents = agents;
-        lastAgentsGeneratedAt = payload.generatedAt || Date.now();
-        updateAgentRefreshNote();
+        resetRefreshRunner();
         const counts = payload.counts || { total: agents.length, idle: 0, working: 0, warning: 0 };
         countTotal.textContent = counts.total ?? agents.length;
         countIdle.textContent = counts.idle ?? agents.filter((a) => a.state === 'idle').length;
@@ -948,6 +930,15 @@
         } catch (error) {
           renderGatewayStatus({ ok: false, error: String(error) });
         }
+      }
+
+      function resetRefreshRunner() {
+        const runner = document.querySelector('.runner');
+        if (!runner) return;
+        runner.classList.add('refreshing');
+        // Force reflow, then restart the 10-second travel animation.
+        void runner.offsetWidth;
+        runner.classList.remove('refreshing');
       }
 
       async function loadAgents() {
@@ -1132,7 +1123,6 @@
       loadAgents();
       window.setInterval(loadGatewayStatus, 10000);
       window.setInterval(loadAgents, 10000);
-      window.setInterval(updateAgentRefreshNote, 1000);
     </script>
   </body>
 </html>
