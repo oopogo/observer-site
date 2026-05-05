@@ -730,6 +730,17 @@
         color: rgba(7, 16, 24, 0.72);
       }
 
+      .message a {
+        color: #9ee7ff;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        font-weight: 800;
+      }
+
+      .message.user a {
+        color: #064c68;
+      }
+
       .chat-foot {
         display: grid;
         gap: 10px;
@@ -1777,10 +1788,29 @@
         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
       }
 
+      function linkifyText(text) {
+        const value = String(text || '');
+        const urlRegex = /https?:\/\/[^\s<>()]+/g;
+        let result = '';
+        let lastIndex = 0;
+        for (const match of value.matchAll(urlRegex)) {
+          const rawUrl = match[0];
+          const start = match.index || 0;
+          const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || '';
+          const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+          result += escapeHtml(value.slice(lastIndex, start));
+          result += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`;
+          result += escapeHtml(trailing);
+          lastIndex = start + rawUrl.length;
+        }
+        result += escapeHtml(value.slice(lastIndex));
+        return result;
+      }
+
       function messageHtml(msg) {
         const timeText = formatMessageTimestamp(msg.ts);
         const timeHtml = timeText ? `<span class="message-time">${escapeHtml(timeText)}</span>` : '';
-        return `${escapeHtml(msg.content || '')}${timeHtml}`;
+        return `${linkifyText(msg.content || '')}${timeHtml}`;
       }
 
       function renderMessages(messages, options = {}) {
