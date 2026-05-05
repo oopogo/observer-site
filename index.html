@@ -977,18 +977,29 @@
         pointer-events: none;
       }
 
-      .office-head, .floor-plan, .office-footer { position: relative; z-index: 1; }
+      .office-head, .floor-plan { position: relative; z-index: 1; }
 
       .office-head {
         display: flex;
         justify-content: space-between;
+        align-items: center;
         gap: 12px;
-        margin-bottom: 18px;
+        margin-bottom: 10px;
       }
 
       .office-team-name { font-size: 21px; font-weight: 950; letter-spacing: -0.045em; }
-      .office-team-role { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; max-width: 240px; }
-      .office-capacity { color: rgba(223,247,255,.78); font-size: 11px; white-space: nowrap; }
+      .office-capacity {
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        color: rgba(223,247,255,.9);
+        background: rgba(255,255,255,.09);
+        border: 1px solid rgba(255,255,255,.13);
+        font-size: 12px;
+        font-weight: 900;
+      }
 
       .floor-plan {
         min-height: 342px;
@@ -1013,6 +1024,7 @@
         border: 1px solid rgba(255,255,255,.09);
         background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
         transform: rotate(var(--desk-tilt, 0deg));
+        cursor: default;
       }
 
       .desk.main-desk {
@@ -1043,15 +1055,9 @@
       .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
       .desk-name { font-weight: 950; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .desk-label { color: rgba(203,214,234,.72); font-size: 11px; }
-      .desk-status { position: relative; z-index: 1; color: rgba(223,247,255,.83); font-size: 12px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
       .desk-action { position: relative; z-index: 1; margin-top: 2px; align-self: flex-start; }
-
-      .office-footer {
-        margin-top: 10px;
-        color: rgba(203,214,234,.72);
-        font-size: 11px;
-        line-height: 1.45;
-      }
+      .desk.main-desk { cursor: pointer; }
+      .desk.main-desk:hover { border-color: color-mix(in srgb, var(--team-accent) 68%, rgba(255,255,255,.18)); }
 
       .view.hidden { display: none; }
 
@@ -1295,7 +1301,6 @@
             <div class="office-head">
               <div>
                 <div class="office-team-name">사무실 준비 중</div>
-                <div class="office-team-role">에이전트 상태를 읽어 파티션과 책상을 배치합니다.</div>
               </div>
             </div>
           </article>
@@ -1621,7 +1626,7 @@
         const orbContent = isMain && agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : (isMain ? escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1)) : (item ? '•' : '+'));
         const tilt = isMain ? 0 : (((index % 3) - 1) * 1.6);
         return `
-          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg">
+          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
             <div class="desk-illustration" aria-hidden="true"></div>
             <div class="desk-top">
               <div class="desk-person">
@@ -1633,8 +1638,6 @@
               </div>
               <span class="state-badge ${stateBadgeClass(state, agent)}">${stateLabel(state, agent)}</span>
             </div>
-            <div class="desk-status">${escapeHtml(status)}</div>
-            ${isMain ? `<button class="recover-button compact desk-action" type="button" data-office-chat="${escapeHtml(agent.id)}">채팅 열기</button>` : ''}
           </div>`;
       }
 
@@ -1642,7 +1645,7 @@
         if (!officeLayout) return;
         const agents = latestAgents || [];
         if (!agents.length) {
-          officeLayout.innerHTML = '<article class="office-partition"><div class="office-head"><div><div class="office-team-name">사무실 준비 중</div><div class="office-team-role">에이전트 상태를 불러오는 중입니다.</div></div></div></article>';
+          officeLayout.innerHTML = '<article class="office-partition"><div class="office-head"><div><div class="office-team-name">사무실 준비 중</div></div></div></article>';
           return;
         }
         officeLayout.innerHTML = agents.map((agent) => {
@@ -1651,21 +1654,19 @@
           const recent = summary.recent || [];
           const deskCount = officeDeskCount(agent);
           const subDesks = Array.from({ length: deskCount }, (_, idx) => renderOfficeDesk(agent, idx + 1, recent[idx] || null)).join('');
-          const hidden = summary.hiddenTotal ? ` · 과거/숨김 ${summary.hiddenTotal}` : '';
+          const hidden = summary.hiddenTotal ? `과거/숨김 ${summary.hiddenTotal}` : '';
           return `
             <article class="office-partition" data-agent-id="${escapeHtml(agent.id)}">
               <div class="office-head">
                 <div>
                   <div class="office-team-name">${escapeHtml(profile.icon || '🏢')} ${escapeHtml(profile.title)}</div>
-                  <div class="office-team-role">${escapeHtml(profile.role)}</div>
                 </div>
-                <div class="office-capacity">보조 책상 ${deskCount}칸${hidden}</div>
+                <div class="office-capacity" title="보조 책상 ${deskCount}칸${hidden ? ` · ${hidden}` : ''}">${deskCount}</div>
               </div>
               <div class="floor-plan">
                 ${renderOfficeDesk(agent, 0)}
                 ${subDesks}
               </div>
-              <div class="office-footer">${escapeHtml(agent.name || agent.id)} 기준 파티션 · ${escapeHtml(stateLabel(agent.state, agent))} · ${escapeHtml(agent.id)}</div>
             </article>`;
         }).join('');
         officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {
