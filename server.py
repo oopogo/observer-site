@@ -253,10 +253,63 @@ def extract_session_message_text(message: dict[str, Any]) -> str:
 
 
 
-def observer_chat_session_key(agent_id: str) -> str:
-    # 관제 UI 채팅 전용 세션. 현재 관제/CLI 세션(agent:observer:observer-site)과
-    # 섞이면 도구 로그, 내부 runId, 상태문구가 채팅에 노출된다.
+def desired_observer_chat_session_key(agent_id: str) -> str:
     return f"agent:{agent_id}:observer-site-chat"
+
+
+def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
+    try:
+        payload = gateway_call("sessions.list", {"limit": 120}, timeout=12)
+    except Exception:
+        return []
+    sessions = payload.get("sessions") if isinstance(payload, dict) else []
+    if not isinstance(sessions, list):
+        return []
+    rows = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        key = str(session.get("key") or "")
+        if not key.startswith(f"agent:{agent_id}:"):
+            continue
+        if ":subagent:" in key or ":cron:" in key or ":openresponses:" in key:
+            continue
+        rows.append(session)
+    rows.sort(key=lambda item: to_epoch_ms(item.get("updatedAt") or item.get("startedAt")), reverse=True)
+    return rows
+
+
+def observer_chat_session_key(agent_id: str) -> str:
+    """Return an existing sendable session key for the agent.
+
+    OpenClaw sessions.send does not create arbitrary keys. A synthetic key like
+    agent:observer:observer-site-chat therefore fails with "session not found"
+    unless such a session already exists. Prefer the dedicated observer-site key
+    when present, otherwise fall back to an existing direct session for the same
+    agent.
+    """
+    desired = desired_observer_chat_session_key(agent_id)
+    rows = existing_agent_session_keys(agent_id)
+    keys = [str(row.get("key") or "") for row in rows]
+    if desired in keys:
+        return desired
+    preferred_suffixes = (":observer-site", ":telegram:direct:7872172509", f":{agent_id}")
+    for suffix in preferred_suffixes:
+        for row in rows:
+            key = str(row.get("key") or "")
+            status = str(row.get("status") or "").lower()
+            if key.endswith(suffix) and status not in {"failed", "error"}:
+                return key
+    for row in rows:
+        status = str(row.get("status") or "").lower()
+        key = str(row.get("key") or "")
+        if status not in {"failed", "error"} and key:
+            return key
+    for suffix in preferred_suffixes:
+        for key in keys:
+            if key.endswith(suffix):
+                return key
+    return desired
 
 def sync_gateway_session_history(agent_id: str) -> None:
     session_key = observer_chat_session_key(agent_id)
@@ -503,6 +556,11 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=920)
         raw = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0:
+            if "session not found" in raw.lower():
+                fresh_key = observer_chat_session_key(agent_id)
+                if fresh_key != session_key:
+                    complete_chat_async(agent_id, agent_name, fresh_key, message, request_id)
+                    return
             raise RuntimeError(raw or f"sessions.send failed with code {result.returncode}")
         payload = parse_json_suffix(raw)
         text = None
