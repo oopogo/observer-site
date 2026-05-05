@@ -162,9 +162,11 @@ def unread_count(agent_id: str) -> int:
         role = item.get("role")
         status = item.get("status")
         content = str(item.get("content") or "")
-        if role == "user" or status in {"pending", "expired"}:
+        if item.get("hidden"):
             continue
-        if content.startswith("전달됨") or content.startswith("응답 대기"):
+        if role == "user" or status in {"pending", "expired", "stale-pending", "recovery-requested", "abort-requested", "filtered-rawdump", "filtered-reasoning", "internal-status"}:
+            continue
+        if content.startswith("전달됨") or content.startswith("응답 대기") or content.startswith("관제 화면에서 상태 재확인"):
             continue
         count += 1
     return count
@@ -308,7 +310,7 @@ def is_visible_chat_item(agent_id: str, item: dict[str, Any]) -> bool:
     if item_session_key and item_session_key not in allowed_observer_ui_history_keys(agent_id):
         return False
     status = item.get("status")
-    if status in {"stale-pending", "expired"}:
+    if status in {"stale-pending", "expired", "recovery-requested", "abort-requested", "filtered-rawdump", "filtered-reasoning", "internal-status"}:
         return False
     if item.get("role") == "assistant" and status == "synced":
         return False
