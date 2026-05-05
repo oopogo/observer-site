@@ -280,36 +280,64 @@ def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
 
 
 def observer_chat_session_key(agent_id: str) -> str:
-    """Return an existing sendable session key for the agent.
+    # 관제 UI 채팅 전용 세션키. 기존 observer-site/telegram/main 작업 세션으로
+    # fallback하면 내부 runId, 도구 로그, 상태 문구가 채팅에 섞인다.
+    return desired_observer_chat_session_key(agent_id)
 
-    OpenClaw sessions.send does not create arbitrary keys. A synthetic key like
-    agent:observer:observer-site-chat therefore fails with "session not found"
-    unless such a session already exists. Prefer the dedicated observer-site key
-    when present, otherwise fall back to an existing direct session for the same
-    agent.
-    """
-    desired = desired_observer_chat_session_key(agent_id)
-    rows = existing_agent_session_keys(agent_id)
-    keys = [str(row.get("key") or "") for row in rows]
-    if desired in keys:
-        return desired
-    preferred_suffixes = (":observer-site", ":telegram:direct:7872172509", f":{agent_id}")
-    for suffix in preferred_suffixes:
-        for row in rows:
-            key = str(row.get("key") or "")
-            status = str(row.get("status") or "").lower()
-            if key.endswith(suffix) and status not in {"failed", "error"}:
-                return key
-    for row in rows:
-        status = str(row.get("status") or "").lower()
-        key = str(row.get("key") or "")
-        if status not in {"failed", "error"} and key:
-            return key
-    for suffix in preferred_suffixes:
-        for key in keys:
-            if key.endswith(suffix):
-                return key
-    return desired
+
+def is_observer_chat_session_key(key: str) -> bool:
+    return key.startswith("agent:") and key.endswith(":observer-site-chat")
+
+
+def legacy_observer_site_session_key(agent_id: str) -> str:
+    return f"agent:{agent_id}:observer-site"
+
+
+def allowed_observer_ui_history_keys(agent_id: str) -> set[str]:
+    # observer-site-chat is the new dedicated channel. observer-site is the
+    # legacy operator UI channel and must stay visible so the page does not
+    # look amnesic after migration. Telegram/openresponses/work sessions remain
+    # excluded from the operator chat history.
+    return {observer_chat_session_key(agent_id), legacy_observer_site_session_key(agent_id)}
+
+
+def is_visible_chat_item(agent_id: str, item: dict[str, Any]) -> bool:
+    if item.get("hidden"):
+        return False
+    item_session_key = str(item.get("sessionKey") or "")
+    if item_session_key and item_session_key not in allowed_observer_ui_history_keys(agent_id):
+        return False
+    status = item.get("status")
+    if status in {"stale-pending", "expired"}:
+        return False
+    if item.get("role") == "assistant" and status == "synced":
+        return False
+    content = str(item.get("content") or "")
+    if status == "pending":
+        return True
+    if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
+        return False
+    if content.startswith("백그라운드 실행을 시작"):
+        return False
+    return not is_internal_status_text(content)
+
+
+def recent_operator_context(agent_id: str, current_request_id: str, limit: int = 14) -> str:
+    entries = [
+        item for item in load_history().get(agent_id, [])
+        if item.get("requestId") != current_request_id and is_visible_chat_item(agent_id, item)
+    ][-limit:]
+    lines: list[str] = []
+    for item in entries:
+        role = item.get("role")
+        label = "사용자" if role == "user" else "에이전트"
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 700:
+            content = content[:700] + "…"
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines)
 
 def sync_gateway_session_history(agent_id: str) -> None:
     session_key = observer_chat_session_key(agent_id)
@@ -357,26 +385,19 @@ def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
     if mark_read:
         mark_agent_read(agent_id)
     messages = load_history().get(agent_id, [])[-80:]
-
-    def is_visible(item: dict[str, Any]) -> bool:
-        if item.get("hidden"):
-            return False
-        status = item.get("status")
-        if status in {"stale-pending", "expired"}:
-            return False
-        if item.get("role") == "assistant" and status == "synced":
-            return False
-        content = str(item.get("content") or "")
-        if status == "pending":
-            return True
-        if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
-            return False
-        if content.startswith("백그라운드 실행을 시작"):
-            return False
-        return not is_internal_status_text(content)
-
-    visible = [item for item in messages if is_visible(item)]
-    return {"ok": True, "agentId": agent_id, "messages": visible[-80:]}
+    expected_session_key = observer_chat_session_key(agent_id)
+    hidden_mixed_count = 0
+    visible = []
+    for item in messages:
+        if is_visible_chat_item(agent_id, item):
+            visible.append(item)
+        elif str(item.get("sessionKey") or "") and str(item.get("sessionKey") or "") not in allowed_observer_ui_history_keys(agent_id):
+            hidden_mixed_count += 1
+    payload = {"ok": True, "agentId": agent_id, "sessionKey": expected_session_key, "messages": visible[-80:]}
+    if hidden_mixed_count:
+        payload["warning"] = f"작업/외부 세션 기록 {hidden_mixed_count}개를 관제 채팅에서 숨겼습니다."
+        payload["hiddenMixedSessionCount"] = hidden_mixed_count
+    return payload
 
 
 def extract_response_text(payload: Any) -> str:
@@ -529,49 +550,44 @@ def build_message_with_attachments(message: str, saved: list[dict[str, Any]]) ->
 
 
 def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
-    """Send a chat turn to the selected OpenClaw agent and write the real final reply.
+    """Send a chat turn through the observer-site dedicated chat session.
 
-    Important: this bridge must not replace agent replies with local status macros.
-    The visible chat row starts as pending, then becomes either the agent's final
-    text or a concrete transport error.
+    Use /v1/responses because sessions.send requires an existing session entry and
+    would otherwise force us to fall back to observer-site/telegram work sessions.
+    That fallback was the source of mixed logs and internal runId/status payloads.
     """
-    args = [
-        OPENCLAW_BIN,
-        "gateway",
-        "call",
-        "sessions.send",
-        "--expect-final",
-        "--json",
-        "--timeout",
-        str(900_000),
-        "--params",
-        json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
-    ]
-    env = os.environ.copy()
-    env.pop("OPENCLAW_GATEWAY_URL", None)
-    env.pop("OPENCLAW_API_URL", None)
-    env["NO_COLOR"] = "1"
+    token = read_gateway_token()
+    context = recent_operator_context(agent_id, request_id)
+    contextual_message = message
+    if context:
+        contextual_message = (
+            "아래는 관제 페이지의 최근 로컬 대화 맥락입니다. "
+            "이 맥락을 참고하되, 사용자의 최신 요청에 답하세요.\n\n"
+            f"[최근 관제 대화]\n{context}\n\n[최신 요청]\n{message}"
+        )
+    body = json.dumps({
+        "model": f"openclaw:{agent_id}",
+        "input": contextual_message,
+        "stream": False,
+    }, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "x-openclaw-agent-id": agent_id,
+        "x-openclaw-session-key": session_key,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request("http://127.0.0.1:18789/v1/responses", data=body, headers=headers, method="POST")
     request_start_ms = int(time.time() * 1000) - 1000
     try:
-        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=920)
-        raw = (result.stdout or result.stderr or "").strip()
-        if result.returncode != 0:
-            if "session not found" in raw.lower():
-                fresh_key = observer_chat_session_key(agent_id)
-                if fresh_key != session_key:
-                    complete_chat_async(agent_id, agent_name, fresh_key, message, request_id)
-                    return
-            raise RuntimeError(raw or f"sessions.send failed with code {result.returncode}")
-        payload = parse_json_suffix(raw)
-        text = None
-        if is_transport_status_payload(payload):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=900)
-        if not text:
-            text = extract_response_text(payload)
-        if not text or text in {"{}", "[]"} or is_internal_status_text(text):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=120)
+        with urllib.request.urlopen(req, timeout=900) as res:
+            raw = res.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw) if raw.strip().startswith(("{", "[")) else raw
+        text = extract_response_text(payload)
         if not text or is_internal_status_text(text):
-            text = "실패: 내부 실행 상태만 받았고 최종 답변을 아직 찾지 못했습니다. 잠시 후 다시 확인해 주세요."
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
+        if not text or is_internal_status_text(text):
+            text = "실패: 에이전트 최종 응답을 받지 못했습니다. 내부 실행 상태만 도착했습니다."
         replace_history_message(
             agent_id,
             request_id,
@@ -593,6 +609,8 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     validate_chat_message(agent_id, message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
     session_key = observer_chat_session_key(agent_id)
+    if not is_observer_chat_session_key(session_key):
+        raise ValueError(f"관제 채팅 전용 세션키가 아닙니다: {session_key}")
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
     outbound_message = build_message_with_attachments(message, saved_attachments)
@@ -862,7 +880,8 @@ def summarize_agents() -> dict[str, Any]:
     output = []
     for raw_base in AGENTS:
         base = apply_agent_settings(raw_base)
-        agent_sessions = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
+        agent_sessions_all = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
+        agent_sessions = [s for s in agent_sessions_all if not is_observer_chat_session_key(str(s.get("key") or ""))]
         agent_sessions.sort(key=lambda s: to_epoch_ms(s.get("updatedAt") or s.get("startedAt")), reverse=True)
         active = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "working"]
         recent_active = []
