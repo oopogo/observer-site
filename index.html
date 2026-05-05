@@ -902,6 +902,10 @@
         white-space: pre-wrap;
       }
 
+      .session-detail.hidden {
+        display: none;
+      }
+
       .recover-button:disabled, .chat-send:disabled {
         cursor: wait;
         opacity: .62;
@@ -1199,7 +1203,8 @@
             </div>
             <div class="ops-row">
               <button class="recover-button" type="button" id="detailButton">마지막 메시지/로그</button>
-              <button class="recover-button" type="button" id="recoverButton">상태 재확인 요청</button>
+              <button class="recover-button" type="button" id="detailCloseButton">로그 닫기</button>
+              <button class="recover-button" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
               <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
             </div>
             <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “마지막 메시지/로그”를 누르세요.</div>
@@ -1256,6 +1261,7 @@
       const buildNote = document.getElementById('buildNote');
       const recoverButton = document.getElementById('recoverButton');
       const detailButton = document.getElementById('detailButton');
+      const detailCloseButton = document.getElementById('detailCloseButton');
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
       const sessionDetail = document.getElementById('sessionDetail');
@@ -1881,20 +1887,33 @@
       });
 
       detailButton.addEventListener('click', async () => {
+        if (!sessionDetail.classList.contains('hidden') && sessionDetail.dataset.loaded === '1') {
+          sessionDetail.classList.add('hidden');
+          return;
+        }
+        sessionDetail.classList.remove('hidden');
         sessionDetail.textContent = '세션 상세를 불러오는 중입니다...';
         try {
           const payload = await postAgentAction('/api/agent/session-detail', detailButton, '조회 중', '상세 조회 실패');
-          if (payload) sessionDetail.textContent = formatSessionDetail(payload);
+          if (payload) {
+            sessionDetail.dataset.loaded = '1';
+            sessionDetail.textContent = formatSessionDetail(payload);
+          }
         } catch (error) {
           sessionDetail.textContent = `세션 상세 조회 실패: ${error}`;
         }
       });
 
+      detailCloseButton.addEventListener('click', () => {
+        sessionDetail.classList.add('hidden');
+      });
+
       recoverButton.addEventListener('click', async () => {
+        if (!window.confirm('상태 재확인 요청은 실험적 기능이고, 정상 동작이 불안정할 수 있습니다. 그래도 보낼까요?')) return;
         appendSystemMessage('상태 재확인 요청을 보내는 중입니다...');
         try {
           const payload = await postAgentAction('/api/agent/recover', recoverButton, '요청 중', '상태 재확인 요청 실패');
-          if (payload) renderMessages(payload.history || [{ role: 'system', content: '상태 재확인 요청을 보냈습니다.' }]);
+          if (payload) appendSystemMessage('상태 재확인 요청을 보냈습니다. 응답이 없으면 이 버튼은 사용하지 마세요.');
           await loadAgents();
         } catch (error) {
           appendSystemMessage(`상태 재확인 요청 실패: ${error}`);
@@ -1902,11 +1921,16 @@
       });
 
       abortButton.addEventListener('click', async () => {
-        if (!window.confirm('이 에이전트의 현재 세션 중단을 요청할까요? 게이트웨이는 건드리지 않습니다.')) return;
+        if (!window.confirm('위험 작업입니다. 현재 에이전트 세션 중단을 요청할까요? 게이트웨이는 건드리지 않습니다.')) return;
+        const typed = window.prompt('실수 방지를 위해 “세션 중단”을 정확히 입력하세요.');
+        if (typed !== '세션 중단') {
+          appendSystemMessage('세션 중단을 취소했습니다.');
+          return;
+        }
         appendSystemMessage('세션 중단 요청을 보내는 중입니다...');
         try {
           const payload = await postAgentAction('/api/agent/abort', abortButton, '중단 중', '세션 중단 요청 실패');
-          if (payload) renderMessages(payload.history || [{ role: 'system', content: '세션 중단을 요청했습니다.' }]);
+          if (payload) appendSystemMessage(`세션 중단을 요청했습니다: ${payload.sessionKey || '-'}`);
           await loadAgents();
         } catch (error) {
           appendSystemMessage(`세션 중단 요청 실패: ${error}`);
