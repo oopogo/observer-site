@@ -1084,10 +1084,21 @@
         z-index: 2;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 7px;
         font-size: 20px;
         font-weight: 950;
         letter-spacing: -0.04em;
+      }
+
+      .zone-name {
+        padding: 5px 9px;
+        border-radius: 999px;
+        color: rgba(238,246,255,.90);
+        background: rgba(8,18,32,.42);
+        border: 1px solid rgba(255,255,255,.12);
+        font-size: 12px;
+        line-height: 1;
+        white-space: nowrap;
       }
 
       .office-capacity {
@@ -1150,9 +1161,9 @@
 
       .desk-top { position: absolute; z-index: 2; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: end; justify-content: space-between; gap: 8px; pointer-events: none; }
       .desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
-      .desk-orb { width: 36px; height: 36px; border-radius: 15px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.14); font-weight: 950; box-shadow: 0 10px 26px rgba(0,0,0,.22); }
+      .desk-orb { position: relative; box-sizing: border-box; width: 36px; height: 36px; aspect-ratio: 1 / 1; border-radius: 50%; display: grid; place-items: center; overflow: visible; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.14); font-weight: 950; box-shadow: 0 10px 26px rgba(0,0,0,.22); }
       .desk-orb::before { content: ""; position: absolute; width: 46px; height: 26px; border-radius: 18px 18px 10px 10px; background: rgba(255,255,255,.10); transform: translateY(22px); z-index: -1; }
-      .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
+      .desk-orb img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
       .desk.away .desk-orb { display: none; }
       .desk .state-badge { min-width: 0; width: 10px; height: 10px; padding: 0; border-radius: 999px; overflow: hidden; text-indent: -999px; }
       .desk.main-desk .state-badge { width: 14px; height: 14px; }
@@ -1207,21 +1218,29 @@
       .lounge-agent {
         position: absolute;
         bottom: 46px;
+        box-sizing: border-box;
         width: 42px;
         height: 42px;
-        border-radius: 16px;
+        aspect-ratio: 1 / 1;
+        padding: 0;
+        border-radius: 50%;
         display: grid;
         place-items: center;
         overflow: hidden;
+        color: rgba(238,246,255,.94);
         background: rgba(255,255,255,.16);
         border: 1px solid rgba(255,255,255,.18);
         box-shadow: 0 12px 28px rgba(0,0,0,.28);
+        font: inherit;
         font-weight: 950;
+        line-height: 1;
+        appearance: none;
+        -webkit-appearance: none;
         pointer-events: auto;
         cursor: pointer;
       }
 
-      .lounge-agent img { width: 100%; height: 100%; object-fit: cover; }
+      .lounge-agent img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
       .lounge-agent:nth-of-type(1) { left: 68px; }
       .lounge-agent:nth-of-type(2) { left: 128px; }
       .lounge-agent:nth-of-type(3) { left: 188px; }
@@ -1246,9 +1265,11 @@
       .walking-agent {
         position: fixed;
         z-index: 9999;
+        box-sizing: border-box;
         width: 42px;
         height: 42px;
-        border-radius: 16px;
+        aspect-ratio: 1 / 1;
+        border-radius: 50%;
         display: grid;
         place-items: center;
         overflow: hidden;
@@ -1259,7 +1280,7 @@
         animation: officeWalk 820ms ease-in-out forwards;
       }
 
-      .walking-agent img { width: 100%; height: 100%; object-fit: cover; }
+      .walking-agent img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
 
       .walking-agent::after {
         content: "···";
@@ -1823,13 +1844,13 @@
 
 
       const OFFICE_PROFILES = {
-        main: { title: '밀레느 팀', role: '메인 업무 지휘 · 긴 작업 분배 · 사용자 대화 중심', desks: 4, icon: '🎮' },
-        observer: { title: '관제/복구 팀', role: 'OpenClaw 상태 감시 · UI/설정 진단 · 복구 작업', desks: 3, icon: '👁️' },
-        mediacontentproducer: { title: '미디어 제작 팀', role: '콘텐츠 기획 · 자료 조사 · 제작 파이프라인', desks: 4, icon: '🎬' },
+        main: { title: '밀레느 팀', role: '메인 업무 지휘 · 긴 작업 분배 · 사용자 대화 중심', desks: 4, icon: '🎮', label: '밀레느' },
+        observer: { title: '관제/복구 팀', role: 'OpenClaw 상태 감시 · UI/설정 진단 · 복구 작업', desks: 3, icon: '👁️', label: '관제' },
+        mediacontentproducer: { title: '미디어 제작 팀', role: '콘텐츠 기획 · 자료 조사 · 제작 파이프라인', desks: 4, icon: '🎬', label: '미디어' },
       };
 
       function officeProfile(agent) {
-        return OFFICE_PROFILES[agent.id] || { title: `${agent.name || agent.id} 팀`, role: agent.role || '역할 미지정 에이전트', desks: 3 };
+        return OFFICE_PROFILES[agent.id] || { title: `${agent.name || agent.id} 팀`, role: agent.role || '역할 미지정 에이전트', desks: 3, label: agent.name || agent.id };
       }
 
       function officeDeskCount(agent) {
@@ -1947,7 +1968,7 @@
           const hidden = summary.hiddenTotal ? ` · 과거/숨김 ${summary.hiddenTotal}` : '';
           return `
             <section class="office-zone" data-agent-id="${escapeHtml(agent.id)}">
-              <div class="zone-marker" title="${escapeHtml(profile.title)} · ${escapeHtml(profile.role || '')}">${escapeHtml(profile.icon || '🏢')}</div>
+              <div class="zone-marker" title="${escapeHtml(profile.title)} · ${escapeHtml(profile.role || '')}">${escapeHtml(profile.icon || '🏢')}<span class="zone-name">${escapeHtml(profile.label || profile.title || agent.name || agent.id)}</span></div>
               <div class="office-capacity" title="보조 책상 ${deskCount}칸${hidden}">${deskCount}</div>
               <div class="floor-plan">
                 ${renderOfficeDesk(agent, 0)}
