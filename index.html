@@ -715,6 +715,21 @@
         font-weight: 700;
       }
 
+      .message-time {
+        display: block;
+        margin-top: 6px;
+        font-size: 11px;
+        line-height: 1.2;
+        opacity: 0.62;
+        white-space: nowrap;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+
+      .message.user .message-time {
+        color: rgba(7, 16, 24, 0.72);
+      }
+
       .chat-foot {
         display: grid;
         gap: 10px;
@@ -1313,6 +1328,21 @@
         return Boolean(selection && !selection.isCollapsed && body.contains(selection.anchorNode));
       }
 
+      function formatMessageTimestamp(ts) {
+        const value = Number(ts || 0);
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        const pad = (num) => String(num).padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+      }
+
+      function messageHtml(msg) {
+        const timeText = formatMessageTimestamp(msg.ts);
+        const timeHtml = timeText ? `<span class="message-time">${escapeHtml(timeText)}</span>` : '';
+        return `${escapeHtml(msg.content || '')}${timeHtml}`;
+      }
+
       function renderMessages(messages, options = {}) {
         if (!options.forceScroll && hasActiveTextSelection()) return;
         const shouldStickToBottom = options.forceScroll || isChatNearBottom();
@@ -1322,7 +1352,7 @@
         for (const msg of visibleMessages(messages)) {
           const div = document.createElement('div');
           div.className = `message ${msg.role === 'user' ? 'user' : 'system'}`;
-          div.innerHTML = escapeHtml(msg.content || '');
+          div.innerHTML = messageHtml(msg);
           body.appendChild(div);
         }
         if (!body.innerHTML.trim()) {
@@ -1338,7 +1368,7 @@
       function appendSystemMessage(text) {
         const system = document.createElement('div');
         system.className = 'message system';
-        system.textContent = text;
+        system.innerHTML = messageHtml({ content: text, ts: Date.now() });
         body.appendChild(system);
         scrollChatToBottom();
       }
@@ -1425,7 +1455,7 @@
         for (const msg of visibleMessages(messages)) {
           const div = document.createElement('div');
           div.className = `message ${msg.role === 'user' ? 'user' : 'system'}`;
-          div.innerHTML = escapeHtml(msg.content || '');
+          div.innerHTML = messageHtml(msg);
           bodyEl.appendChild(div);
         }
         if (!bodyEl.innerHTML.trim()) bodyEl.innerHTML = '<div class="message system">아직 대화 기록이 없습니다.</div>';
