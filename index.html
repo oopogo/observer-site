@@ -1347,7 +1347,6 @@
             </div>
             <div class="ops-row">
               <button class="recover-button" type="button" id="detailButton">마지막 메시지/로그</button>
-              <button class="recover-button" type="button" id="detailCloseButton">로그 닫기</button>
               <button class="recover-button" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
               <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
             </div>
@@ -1405,7 +1404,6 @@
       const buildNote = document.getElementById('buildNote');
       const recoverButton = document.getElementById('recoverButton');
       const detailButton = document.getElementById('detailButton');
-      const detailCloseButton = document.getElementById('detailCloseButton');
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
       const sessionDetail = document.getElementById('sessionDetail');
@@ -2146,10 +2144,6 @@
         } catch (error) {
           sessionDetail.textContent = `세션 상세 조회 실패: ${error}`;
         }
-      });
-
-      detailCloseButton.addEventListener('click', () => {
-        sessionDetail.classList.add('hidden');
       });
 
       recoverButton.addEventListener('click', async () => {
