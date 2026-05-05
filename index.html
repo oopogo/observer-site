@@ -2424,8 +2424,12 @@
 
       function formatSessionDetail(payload) {
         const agent = payload.agent || {};
+        const sourceLabel = payload.source === 'runtime' ? '실행 로그' : '관제 채팅';
+        const runtimeLine = payload.runtimeSessionKey && payload.runtimeSessionKey !== payload.sessionKey ? [`최근 실행 세션: ${payload.runtimeSessionKey}`] : [];
         const lines = [
+          `표시: ${sourceLabel}`,
           `세션: ${payload.sessionKey || '-'}`,
+          ...runtimeLine,
           `상태: ${agent.statusText || '-'} · ${agent.detail || ''}`,
           '',
           '마지막 메시지:',

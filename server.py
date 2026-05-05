@@ -760,21 +760,50 @@ def get_agent_session_detail(agent_id: str) -> dict[str, Any]:
         raise ValueError("허용되지 않은 에이전트입니다.")
     summary = summarize_agents()
     agent = next((a for a in summary.get("agents", []) if a.get("id") == agent_id), None)
-    key = agent.get("latestSessionKey") if agent else observer_chat_session_key(agent_id)
-    messages_payload = gateway_call("sessions.get", {"key": key, "limit": 20}, timeout=18)
-    messages = messages_payload.get("messages") if isinstance(messages_payload, dict) else []
-    if not isinstance(messages, list):
-        messages = []
+
+    # Detail button lives inside the operator chat. When the agent is idle, the
+    # latest gateway session is often a heartbeat session (for example
+    # agent:main:main) and shows HEARTBEAT_OK/tool logs instead of the work the
+    # operator just discussed. Show live runtime logs only while the agent is
+    # actually working; otherwise show the dedicated observer-site chat history.
+    runtime_key = str(agent.get("latestSessionKey") or "") if agent else ""
+    use_runtime_log = bool(agent and agent.get("isWorkingNow") and runtime_key)
+    key = runtime_key if use_runtime_log else observer_chat_session_key(agent_id)
+    source = "runtime" if use_runtime_log else "observer-chat"
+
     compact_messages = []
-    for msg in messages[-20:]:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role") or msg.get("type") or "message"
-        content = msg.get("content") or msg.get("text") or msg.get("message") or ""
-        if not isinstance(content, str):
-            content = json.dumps(content, ensure_ascii=False)[:2000]
-        compact_messages.append({"role": role, "content": content[:2000], "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt")})
-    return {"ok": True, "agentId": agent_id, "sessionKey": key, "agent": agent, "messages": compact_messages}
+    if use_runtime_log:
+        messages_payload = gateway_call("sessions.get", {"key": key, "limit": 20}, timeout=18)
+        messages = messages_payload.get("messages") if isinstance(messages_payload, dict) else []
+        if not isinstance(messages, list):
+            messages = []
+        for msg in messages[-20:]:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or msg.get("type") or "message"
+            content = msg.get("content") or msg.get("text") or msg.get("message") or ""
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)[:2000]
+            compact_messages.append({"role": role, "content": content[:2000], "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt")})
+    else:
+        for msg in public_history(agent_id, mark_read=False).get("messages", [])[-20:]:
+            if not isinstance(msg, dict):
+                continue
+            compact_messages.append({
+                "role": msg.get("role") or "message",
+                "content": str(msg.get("content") or "")[:2000],
+                "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt"),
+            })
+
+    return {
+        "ok": True,
+        "agentId": agent_id,
+        "sessionKey": key,
+        "source": source,
+        "runtimeSessionKey": runtime_key or None,
+        "agent": agent,
+        "messages": compact_messages,
+    }
 
 
 def abort_agent_session(agent_id: str) -> dict[str, Any]:
