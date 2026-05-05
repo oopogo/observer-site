@@ -924,6 +924,96 @@
       }
 
 
+      .office-layout {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .office-partition {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 28px;
+        padding: 16px;
+        min-height: 360px;
+        background:
+          linear-gradient(135deg, rgba(255,255,255,.08), rgba(255,255,255,.025)),
+          radial-gradient(circle at 20% 10%, rgba(158,231,255,.14), transparent 34%);
+        box-shadow: 0 24px 90px rgba(0,0,0,.26);
+      }
+
+      .office-partition::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+        background-size: 36px 36px;
+        opacity: .4;
+      }
+
+      .office-head, .desk-grid, .office-footer { position: relative; z-index: 1; }
+
+      .office-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .office-team-name { font-size: 20px; font-weight: 900; letter-spacing: -0.04em; }
+      .office-team-role { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .office-capacity { color: rgba(223,247,255,.78); font-size: 11px; white-space: nowrap; }
+
+      .desk-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .desk {
+        min-height: 112px;
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 20px;
+        padding: 11px;
+        background: rgba(5, 12, 22, .36);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .desk.main-desk {
+        grid-column: 1 / -1;
+        min-height: 132px;
+        background: linear-gradient(135deg, rgba(158,231,255,.16), rgba(255,255,255,.055));
+      }
+
+      .desk.empty { opacity: .72; border-style: dashed; }
+      .desk.working { border-color: rgba(159,240,198,.55); box-shadow: 0 0 0 1px rgba(159,240,198,.12) inset; }
+      .desk.assigned { border-color: rgba(255,210,129,.55); }
+      .desk.warning { border-color: rgba(255,126,126,.6); }
+
+      .desk-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .desk-orb { width: 34px; height: 34px; border-radius: 14px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.12); font-weight: 900; }
+      .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
+      .desk-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .desk-label { color: rgba(203,214,234,.72); font-size: 11px; }
+      .desk-status { color: rgba(223,247,255,.82); font-size: 12px; line-height: 1.45; }
+      .desk-action { margin-top: auto; align-self: flex-start; }
+
+      .office-footer {
+        margin-top: 12px;
+        color: rgba(203,214,234,.72);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+
       .view.hidden { display: none; }
 
       .multi-chat-layout {
@@ -1098,6 +1188,7 @@
         </div>
         <nav class="tabs" aria-label="옵저버 사이트 탭">
           <button class="tab" type="button" id="agentTabButton">에이전트</button>
+          <button class="tab secondary" type="button" id="officeTabButton">사무실</button>
           <button class="tab secondary" type="button" id="chatTabButton">채팅</button>
           <button class="tab secondary" type="button" id="editAgentsButton">편집</button>
         </nav>
@@ -1157,6 +1248,20 @@
 
       <p class="hint">실제 OpenClaw 상태를 10초마다 읽어와 에이전트를 응답 가능/작업중 칸으로 이동합니다.</p>
       <div class="build-note" id="buildNote">화면 버전 확인 중</div>
+      </div>
+
+      <div class="view hidden" id="officeView">
+        <section class="office-layout" id="officeLayout" aria-label="AI 사무실 배치도">
+          <article class="office-partition">
+            <div class="office-head">
+              <div>
+                <div class="office-team-name">사무실 준비 중</div>
+                <div class="office-team-role">에이전트 상태를 읽어 파티션과 책상을 배치합니다.</div>
+              </div>
+            </div>
+          </article>
+        </section>
+        <p class="hint">사무실 탭은 에이전트별 역할 파티션과 보조 에이전트 책상을 팀처럼 보여주는 실험 화면입니다.</p>
       </div>
 
       <div class="view hidden" id="multiChatView">
@@ -1266,8 +1371,11 @@
       const abortButton = document.getElementById('abortButton');
       const sessionDetail = document.getElementById('sessionDetail');
       const agentTabButton = document.getElementById('agentTabButton');
+      const officeTabButton = document.getElementById('officeTabButton');
       const chatTabButton = document.getElementById('chatTabButton');
       const agentView = document.getElementById('agentView');
+      const officeView = document.getElementById('officeView');
+      const officeLayout = document.getElementById('officeLayout');
       const multiChatView = document.getElementById('multiChatView');
       const multiChatAgentList = document.getElementById('multiChatAgentList');
       const multiChatGrid = document.getElementById('multiChatGrid');
@@ -1441,12 +1549,106 @@
       }
 
 
+      const OFFICE_PROFILES = {
+        main: { title: '밀레느 팀', role: '메인 업무 지휘 · 긴 작업 분배 · 사용자 대화 중심', desks: 4 },
+        observer: { title: '관제/복구 팀', role: 'OpenClaw 상태 감시 · UI/설정 진단 · 복구 작업', desks: 3 },
+        mediacontentproducer: { title: '미디어 제작 팀', role: '콘텐츠 기획 · 자료 조사 · 제작 파이프라인', desks: 4 },
+      };
+
+      function officeProfile(agent) {
+        return OFFICE_PROFILES[agent.id] || { title: `${agent.name || agent.id} 팀`, role: agent.role || '역할 미지정 에이전트', desks: 3 };
+      }
+
+      function officeDeskCount(agent) {
+        const profile = officeProfile(agent);
+        const summary = agent.subagents || {};
+        const liveSlots = Number(summary.total || 0) + Number(summary.working || 0) + Number(summary.failed || 0) + Number(summary.lag || 0);
+        return Math.max(profile.desks || 3, liveSlots || 0);
+      }
+
+      function deskStateClass(state) {
+        if (state === 'working') return 'working';
+        if (state === 'assigned') return 'assigned';
+        if (state === 'warning') return 'warning';
+        return '';
+      }
+
+      function renderOfficeDesk(agent, index, item = null) {
+        const isMain = index === 0;
+        const state = isMain ? agent.state : (item && item.state) || 'idle';
+        const label = isMain ? '메인 책상' : `보조 책상 ${index}`;
+        const name = isMain ? (agent.name || agent.id) : (item ? `서브 에이전트 ${index}` : '비어 있음');
+        const status = isMain
+          ? (agent.detail || agent.statusText || '상태 확인 중')
+          : (item ? (item.status || '최근 하위 작업') : '필요하면 이 자리로 보조 작업을 붙일 예정');
+        const orbContent = isMain && agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : (isMain ? escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1)) : (item ? '•' : '+'));
+        return `
+          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}">
+            <div class="desk-top">
+              <div class="desk-person">
+                <div class="desk-orb">${orbContent}</div>
+                <div>
+                  <div class="desk-name">${escapeHtml(name)}</div>
+                  <div class="desk-label">${escapeHtml(label)}</div>
+                </div>
+              </div>
+              <span class="state-badge ${stateBadgeClass(state, agent)}">${stateLabel(state, agent)}</span>
+            </div>
+            <div class="desk-status">${escapeHtml(status)}</div>
+            ${isMain ? `<button class="recover-button compact desk-action" type="button" data-office-chat="${escapeHtml(agent.id)}">채팅 열기</button>` : ''}
+          </div>`;
+      }
+
+      function renderOfficeView() {
+        if (!officeLayout) return;
+        const agents = latestAgents || [];
+        if (!agents.length) {
+          officeLayout.innerHTML = '<article class="office-partition"><div class="office-head"><div><div class="office-team-name">사무실 준비 중</div><div class="office-team-role">에이전트 상태를 불러오는 중입니다.</div></div></div></article>';
+          return;
+        }
+        officeLayout.innerHTML = agents.map((agent) => {
+          const profile = officeProfile(agent);
+          const summary = agent.subagents || {};
+          const recent = summary.recent || [];
+          const deskCount = officeDeskCount(agent);
+          const subDesks = Array.from({ length: deskCount }, (_, idx) => renderOfficeDesk(agent, idx + 1, recent[idx] || null)).join('');
+          const hidden = summary.hiddenTotal ? ` · 과거/숨김 ${summary.hiddenTotal}` : '';
+          return `
+            <article class="office-partition" data-agent-id="${escapeHtml(agent.id)}">
+              <div class="office-head">
+                <div>
+                  <div class="office-team-name">${escapeHtml(profile.title)}</div>
+                  <div class="office-team-role">${escapeHtml(profile.role)}</div>
+                </div>
+                <div class="office-capacity">보조 책상 ${deskCount}칸${hidden}</div>
+              </div>
+              <div class="desk-grid">
+                ${renderOfficeDesk(agent, 0)}
+                ${subDesks}
+              </div>
+              <div class="office-footer">${escapeHtml(agent.name || agent.id)} 기준 파티션 · ${escapeHtml(stateLabel(agent.state, agent))} · ${escapeHtml(agent.id)}</div>
+            </article>`;
+        }).join('');
+        officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const agentId = button.getAttribute('data-office-chat');
+            const agent = latestAgents.find((item) => item.id === agentId);
+            openChat({ dataset: { agentId, agent: agent ? agent.name : agentId, state: agent ? (agent.detail || agent.statusText || '') : '', accent: agent && agent.state === 'idle' ? 'idle' : 'work' } });
+          });
+        });
+      }
+
+
       function switchMainView(view) {
+        const officeMode = view === 'office';
         const chatMode = view === 'chat';
-        agentView.classList.toggle('hidden', chatMode);
+        agentView.classList.toggle('hidden', officeMode || chatMode);
+        officeView.classList.toggle('hidden', !officeMode);
         multiChatView.classList.toggle('hidden', !chatMode);
-        agentTabButton.classList.toggle('secondary', chatMode);
+        agentTabButton.classList.toggle('secondary', officeMode || chatMode);
+        officeTabButton.classList.toggle('secondary', !officeMode);
         chatTabButton.classList.toggle('secondary', !chatMode);
+        if (officeMode) renderOfficeView();
         if (chatMode) renderMultiChatAgentList();
       }
 
@@ -1618,6 +1820,7 @@
         for (const agent of active) workingAgents.appendChild(agentCard(agent));
         if (!idle.length) idleAgents.innerHTML = '';
         if (!active.length) workingAgents.innerHTML = '';
+        if (!officeView.classList.contains('hidden')) renderOfficeView();
         if (!multiChatView.classList.contains('hidden')) renderMultiChatAgentList();
       }
 
@@ -2051,6 +2254,7 @@
       });
 
       agentTabButton.addEventListener('click', () => switchMainView('agent'));
+      officeTabButton.addEventListener('click', () => switchMainView('office'));
       chatTabButton.addEventListener('click', () => switchMainView('chat'));
 
       document.addEventListener('visibilitychange', () => {
