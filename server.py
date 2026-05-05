@@ -304,12 +304,16 @@ def allowed_observer_ui_history_keys(agent_id: str) -> set[str]:
 
 
 def is_visible_chat_item(agent_id: str, item: dict[str, Any]) -> bool:
+    status = item.get("status")
+    content = str(item.get("content") or "")
+    # 정상 assistant 완료 답변이 cleanup 과정에서 hidden 처리되면 관제 채팅이
+    # "벙어리"처럼 보인다. 내부 덤프/상태문구가 아닌 완료 답변은 표시한다.
     if item.get("hidden"):
-        return False
+        if not (item.get("role") == "assistant" and status == "done" and not is_internal_status_text(content)):
+            return False
     item_session_key = str(item.get("sessionKey") or "")
     if item_session_key and item_session_key not in allowed_observer_ui_history_keys(agent_id):
         return False
-    status = item.get("status")
     if status in {"stale-pending", "expired", "recovery-requested", "abort-requested", "filtered-rawdump", "filtered-reasoning", "internal-status"}:
         return False
     if item.get("role") == "assistant" and status == "synced":
@@ -395,7 +399,13 @@ def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
             visible.append(item)
         elif str(item.get("sessionKey") or "") and str(item.get("sessionKey") or "") not in allowed_observer_ui_history_keys(agent_id):
             hidden_mixed_count += 1
-    payload = {"ok": True, "agentId": agent_id, "sessionKey": expected_session_key, "messages": visible[-80:]}
+    normalized_visible = []
+    for item in visible[-80:]:
+        if item.get("role") == "assistant" and item.get("status") == "done" and item.get("hidden") and not is_internal_status_text(str(item.get("content") or "")):
+            item = dict(item)
+            item.pop("hidden", None)
+        normalized_visible.append(item)
+    payload = {"ok": True, "agentId": agent_id, "sessionKey": expected_session_key, "messages": normalized_visible}
     if hidden_mixed_count:
         payload["warning"] = f"작업/외부 세션 기록 {hidden_mixed_count}개를 관제 채팅에서 숨겼습니다."
         payload["hiddenMixedSessionCount"] = hidden_mixed_count
