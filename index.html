@@ -934,8 +934,9 @@
         min-height: clamp(560px, calc(100vh - 210px), 800px);
         border: 1px solid rgba(255,255,255,.14);
         border-radius: 38px;
-        padding: 28px;
+        padding: 84px 28px 28px;
         background:
+          linear-gradient(180deg, rgba(190,211,230,.14) 0 58px, rgba(255,255,255,.035) 58px 60px, transparent 60px),
           radial-gradient(circle at 14% 10%, rgba(158,231,255,.18), transparent 28%),
           radial-gradient(circle at 88% 12%, rgba(216,180,254,.16), transparent 30%),
           linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.025));
@@ -945,7 +946,7 @@
       .office-room::before {
         content: "";
         position: absolute;
-        inset: 70px 20px 20px;
+        inset: 92px 20px 20px;
         border-radius: 30px;
         background:
           linear-gradient(30deg, rgba(255,255,255,.07) 12%, transparent 12% 50%, rgba(255,255,255,.045) 50% 62%, transparent 62%),
@@ -968,6 +969,26 @@
         pointer-events: none;
       }
 
+      .office-window-row {
+        position: absolute;
+        top: 18px;
+        left: 34px;
+        right: 34px;
+        display: flex;
+        gap: 14px;
+        z-index: 1;
+        pointer-events: none;
+      }
+
+      .office-window {
+        width: 118px;
+        height: 28px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, rgba(158,231,255,.34), rgba(94,124,255,.16));
+        border: 1px solid rgba(223,247,255,.20);
+        box-shadow: inset 0 0 18px rgba(255,255,255,.08);
+      }
+
       .office-door {
         position: absolute;
         left: 34px;
@@ -979,12 +1000,52 @@
         border: 1px solid rgba(255,255,255,.10);
       }
 
+      .office-meeting {
+        position: absolute;
+        left: 50%;
+        bottom: 42px;
+        width: 210px;
+        height: 86px;
+        transform: translateX(-50%);
+        border-radius: 46px;
+        background: linear-gradient(135deg, rgba(247,201,143,.78), rgba(119,74,48,.72));
+        box-shadow: 0 18px 34px rgba(0,0,0,.30);
+        opacity: .70;
+        z-index: 1;
+        pointer-events: none;
+      }
+
+      .office-meeting::before, .office-meeting::after {
+        content: "";
+        position: absolute;
+        top: 28px;
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.14);
+      }
+
+      .office-meeting::before { left: -38px; }
+      .office-meeting::after { right: -38px; }
+
+      .office-shelf {
+        position: absolute;
+        right: 112px;
+        top: 26px;
+        width: 138px;
+        height: 18px;
+        border-radius: 999px;
+        background: rgba(247,201,143,.18);
+        border: 1px solid rgba(247,201,143,.18);
+        z-index: 1;
+      }
+
       .office-zones {
         position: relative;
-        z-index: 1;
+        z-index: 2;
         display: grid;
         grid-template-columns: 1.05fr .95fr 1.05fr;
-        gap: 22px;
+        gap: 12px;
         min-height: 500px;
         align-items: stretch;
       }
@@ -993,9 +1054,9 @@
         --team-accent: #9ee7ff;
         position: relative;
         min-height: 500px;
-        padding: 54px 14px 18px;
-        border-radius: 32px;
-        background: color-mix(in srgb, var(--team-accent) 8%, transparent);
+        padding: 54px 16px 142px;
+        border-radius: 0;
+        background: radial-gradient(circle at 50% 12%, color-mix(in srgb, var(--team-accent) 10%, transparent), transparent 34%);
       }
 
       .office-zone[data-agent-id="main"] { --team-accent: #f7c98f; }
@@ -1005,12 +1066,16 @@
       .office-zone::before {
         content: "";
         position: absolute;
-        inset: 18px 8px 8px;
-        border: 1px dashed color-mix(in srgb, var(--team-accent) 42%, rgba(255,255,255,.10));
-        border-radius: 28px;
+        top: 54px;
+        bottom: 124px;
+        left: 0;
+        width: 1px;
+        background: linear-gradient(transparent, color-mix(in srgb, var(--team-accent) 52%, rgba(255,255,255,.10)), transparent);
         pointer-events: none;
-        opacity: .7;
+        opacity: .78;
       }
+
+      .office-zone:first-child::before { display: none; }
 
       .zone-marker {
         position: absolute;
@@ -1093,7 +1158,8 @@
 
       @media (max-width: 980px) {
         .office-zones { grid-template-columns: 1fr; }
-        .office-zone { min-height: 420px; }
+        .office-zone { min-height: 420px; padding-bottom: 24px; }
+        .office-meeting { display: none; }
       }
 
       .view.hidden { display: none; }
@@ -1335,9 +1401,12 @@
       <div class="view hidden" id="officeView">
         <section class="office-layout" id="officeLayout" aria-label="AI 사무실 배치도">
           <div class="office-room">
+            <div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div>
+            <div class="office-shelf" aria-hidden="true"></div>
             <div class="office-zones">
               <section class="office-zone"><div class="zone-marker">🏢</div></section>
             </div>
+            <div class="office-meeting" aria-hidden="true"></div>
             <div class="office-door" aria-hidden="true"></div>
           </div>
         </section>
@@ -1677,7 +1746,7 @@
         if (!officeLayout) return;
         const agents = latestAgents || [];
         if (!agents.length) {
-          officeLayout.innerHTML = '<div class="office-room"><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-door" aria-hidden="true"></div></div>';
+          officeLayout.innerHTML = '<div class="office-room"><div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div><div class="office-shelf" aria-hidden="true"></div><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-meeting" aria-hidden="true"></div><div class="office-door" aria-hidden="true"></div></div>';
           return;
         }
         const zones = agents.map((agent) => {
@@ -1699,7 +1768,10 @@
         }).join('');
         officeLayout.innerHTML = `
           <div class="office-room">
+            <div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div>
+            <div class="office-shelf" aria-hidden="true"></div>
             <div class="office-zones">${zones}</div>
+            <div class="office-meeting" aria-hidden="true"></div>
             <div class="office-door" aria-hidden="true"></div>
           </div>`;
         officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {
