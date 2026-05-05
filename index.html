@@ -1731,7 +1731,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-05-1845';
+      const BUILD_ID = '2026-05-05-2148';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1790,16 +1790,17 @@
 
       function linkifyText(text) {
         const value = String(text || '');
-        const urlRegex = /https?:\/\/[^\s<>()]+/g;
+        const urlRegex = /(?:https?:\/\/|www\.)[^\s<>()\[\]{}]+/g;
         let result = '';
         let lastIndex = 0;
         for (const match of value.matchAll(urlRegex)) {
           const rawUrl = match[0];
           const start = match.index || 0;
           const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || '';
-          const url = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+          const displayUrl = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
+          const href = displayUrl.startsWith('www.') ? `https://${displayUrl}` : displayUrl;
           result += escapeHtml(value.slice(lastIndex, start));
-          result += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`;
+          result += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayUrl)}</a>`;
           result += escapeHtml(trailing);
           lastIndex = start + rawUrl.length;
         }
