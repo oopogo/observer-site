@@ -925,72 +925,113 @@
 
 
       .office-layout {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-        gap: 18px;
-        align-items: stretch;
+        min-height: clamp(560px, calc(100vh - 190px), 820px);
       }
 
-      .office-partition {
-        --team-accent: #9ee7ff;
+      .office-room {
         position: relative;
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.15);
-        border-radius: 34px;
-        padding: 18px;
-        min-height: 470px;
+        min-height: clamp(560px, calc(100vh - 210px), 800px);
+        border: 1px solid rgba(255,255,255,.14);
+        border-radius: 38px;
+        padding: 28px;
         background:
-          radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--team-accent) 24%, transparent), transparent 30%),
-          linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.025));
-        box-shadow: 0 28px 100px rgba(0,0,0,.30);
+          radial-gradient(circle at 14% 10%, rgba(158,231,255,.18), transparent 28%),
+          radial-gradient(circle at 88% 12%, rgba(216,180,254,.16), transparent 30%),
+          linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.025));
+        box-shadow: 0 30px 110px rgba(0,0,0,.32);
       }
 
-      .office-partition[data-agent-id="main"] { --team-accent: #f7c98f; }
-      .office-partition[data-agent-id="observer"] { --team-accent: #9ee7ff; }
-      .office-partition[data-agent-id="mediacontentproducer"] { --team-accent: #d8b4fe; }
-
-      .office-partition::before {
+      .office-room::before {
         content: "";
         position: absolute;
-        inset: 72px 12px 12px;
-        pointer-events: none;
-        border-radius: 24px;
+        inset: 70px 20px 20px;
+        border-radius: 30px;
         background:
-          linear-gradient(30deg, rgba(255,255,255,.08) 12%, transparent 12% 50%, rgba(255,255,255,.055) 50% 62%, transparent 62%),
-          linear-gradient(150deg, rgba(255,255,255,.045) 12%, transparent 12% 50%, rgba(255,255,255,.035) 50% 62%, transparent 62%),
-          rgba(5, 12, 22, .18);
-        background-size: 42px 42px, 42px 42px, auto;
+          linear-gradient(30deg, rgba(255,255,255,.07) 12%, transparent 12% 50%, rgba(255,255,255,.045) 50% 62%, transparent 62%),
+          linear-gradient(150deg, rgba(255,255,255,.04) 12%, transparent 12% 50%, rgba(255,255,255,.03) 50% 62%, transparent 62%),
+          rgba(5, 12, 22, .16);
+        background-size: 48px 48px, 48px 48px, auto;
         border: 1px solid rgba(255,255,255,.07);
-        transform: perspective(900px) rotateX(3deg);
-        opacity: .92;
+        transform: perspective(1200px) rotateX(2deg);
       }
 
-      .office-partition::after {
+      .office-room::after {
         content: "";
         position: absolute;
-        right: 10px;
-        bottom: 8px;
-        width: 72px;
-        height: 96px;
+        right: 24px;
+        bottom: 18px;
+        width: 82px;
+        height: 110px;
         background: url('assets/office-plant.svg') center / contain no-repeat;
         opacity: .78;
         pointer-events: none;
       }
 
-      .office-head, .floor-plan { position: relative; z-index: 1; }
-
-      .office-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 10px;
+      .office-door {
+        position: absolute;
+        left: 34px;
+        bottom: 24px;
+        width: 92px;
+        height: 18px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.10);
+        border: 1px solid rgba(255,255,255,.10);
       }
 
-      .office-team-name { font-size: 21px; font-weight: 950; letter-spacing: -0.045em; }
+      .office-zones {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: 1.05fr .95fr 1.05fr;
+        gap: 22px;
+        min-height: 500px;
+        align-items: stretch;
+      }
+
+      .office-zone {
+        --team-accent: #9ee7ff;
+        position: relative;
+        min-height: 500px;
+        padding: 54px 14px 18px;
+        border-radius: 32px;
+        background: color-mix(in srgb, var(--team-accent) 8%, transparent);
+      }
+
+      .office-zone[data-agent-id="main"] { --team-accent: #f7c98f; }
+      .office-zone[data-agent-id="observer"] { --team-accent: #9ee7ff; }
+      .office-zone[data-agent-id="mediacontentproducer"] { --team-accent: #d8b4fe; }
+
+      .office-zone::before {
+        content: "";
+        position: absolute;
+        inset: 18px 8px 8px;
+        border: 1px dashed color-mix(in srgb, var(--team-accent) 42%, rgba(255,255,255,.10));
+        border-radius: 28px;
+        pointer-events: none;
+        opacity: .7;
+      }
+
+      .zone-marker {
+        position: absolute;
+        top: 14px;
+        left: 16px;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 20px;
+        font-weight: 950;
+        letter-spacing: -0.04em;
+      }
+
       .office-capacity {
-        width: 32px;
-        height: 32px;
+        position: absolute;
+        top: 14px;
+        right: 16px;
+        z-index: 2;
+        width: 30px;
+        height: 30px;
         border-radius: 999px;
         display: grid;
         place-items: center;
@@ -1002,59 +1043,58 @@
       }
 
       .floor-plan {
-        min-height: 342px;
-        border-radius: 26px;
-        padding: 18px;
+        position: relative;
+        z-index: 1;
         display: grid;
         grid-template-columns: 1fr 1fr;
-        grid-auto-rows: minmax(128px, auto);
+        grid-auto-rows: minmax(126px, auto);
         gap: 14px;
         align-items: center;
       }
 
       .desk {
         position: relative;
-        min-height: 128px;
-        border-radius: 26px;
+        min-height: 126px;
+        border-radius: 24px;
         padding: 8px;
-        border: 1px solid rgba(255,255,255,.09);
-        background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
+        background: transparent;
         transform: rotate(var(--desk-tilt, 0deg));
         cursor: default;
       }
 
       .desk.main-desk {
         grid-column: 1 / -1;
-        min-height: 158px;
-        border-color: color-mix(in srgb, var(--team-accent) 45%, rgba(255,255,255,.16));
-        background: linear-gradient(135deg, color-mix(in srgb, var(--team-accent) 16%, transparent), rgba(255,255,255,.035));
+        min-height: 154px;
+        cursor: pointer;
       }
 
-      .desk.empty { opacity: .68; border-style: dashed; }
-      .desk.working { box-shadow: 0 0 0 1px rgba(159,240,198,.18) inset, 0 0 30px rgba(159,240,198,.10); }
-      .desk.assigned { box-shadow: 0 0 0 1px rgba(255,210,129,.18) inset, 0 0 30px rgba(255,210,129,.09); }
-      .desk.warning { box-shadow: 0 0 0 1px rgba(255,126,126,.22) inset, 0 0 30px rgba(255,126,126,.10); }
+      .desk.empty { opacity: .68; }
+      .desk.working { filter: drop-shadow(0 0 18px rgba(159,240,198,.26)); }
+      .desk.assigned { filter: drop-shadow(0 0 18px rgba(255,210,129,.24)); }
+      .desk.warning { filter: drop-shadow(0 0 18px rgba(255,126,126,.28)); }
 
       .desk-illustration {
         position: absolute;
-        inset: -16px 4px 30px;
+        inset: -14px 2px 20px;
         background: url('assets/office-desk.svg') center bottom / contain no-repeat;
-        filter: drop-shadow(0 16px 18px rgba(0,0,0,.23));
+        filter: drop-shadow(0 16px 18px rgba(0,0,0,.25));
         pointer-events: none;
       }
 
-      .desk.empty .desk-illustration { background-image: url('assets/office-empty-desk.svg'); opacity: .8; }
+      .desk.empty .desk-illustration { background-image: url('assets/office-empty-desk.svg'); opacity: .82; }
 
       .desk-top { position: absolute; z-index: 2; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: end; justify-content: space-between; gap: 8px; pointer-events: none; }
       .desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .desk-orb { width: 36px; height: 36px; border-radius: 15px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.14); font-weight: 950; box-shadow: 0 10px 26px rgba(0,0,0,.22); }
       .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
-      .desk-name, .desk-label { display: none; }
       .desk .state-badge { min-width: 0; width: 10px; height: 10px; padding: 0; border-radius: 999px; overflow: hidden; text-indent: -999px; }
       .desk.main-desk .state-badge { width: 14px; height: 14px; }
-      .desk-action { position: relative; z-index: 1; margin-top: 2px; align-self: flex-start; }
-      .desk.main-desk { cursor: pointer; }
-      .desk.main-desk:hover { border-color: color-mix(in srgb, var(--team-accent) 68%, rgba(255,255,255,.18)); }
+      .desk.main-desk:hover .desk-illustration { transform: translateY(-2px); }
+
+      @media (max-width: 980px) {
+        .office-zones { grid-template-columns: 1fr; }
+        .office-zone { min-height: 420px; }
+      }
 
       .view.hidden { display: none; }
 
@@ -1294,13 +1334,12 @@
 
       <div class="view hidden" id="officeView">
         <section class="office-layout" id="officeLayout" aria-label="AI 사무실 배치도">
-          <article class="office-partition">
-            <div class="office-head">
-              <div>
-                <div class="office-team-name">사무실 준비 중</div>
-              </div>
+          <div class="office-room">
+            <div class="office-zones">
+              <section class="office-zone"><div class="zone-marker">🏢</div></section>
             </div>
-          </article>
+            <div class="office-door" aria-hidden="true"></div>
+          </div>
         </section>
         <p class="hint">사무실 탭은 에이전트별 역할 파티션과 보조 에이전트 책상을 팀처럼 보여주는 실험 화면입니다.</p>
       </div>
@@ -1638,30 +1677,31 @@
         if (!officeLayout) return;
         const agents = latestAgents || [];
         if (!agents.length) {
-          officeLayout.innerHTML = '<article class="office-partition"><div class="office-head"><div><div class="office-team-name">사무실 준비 중</div></div></div></article>';
+          officeLayout.innerHTML = '<div class="office-room"><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-door" aria-hidden="true"></div></div>';
           return;
         }
-        officeLayout.innerHTML = agents.map((agent) => {
+        const zones = agents.map((agent) => {
           const profile = officeProfile(agent);
           const summary = agent.subagents || {};
           const recent = summary.recent || [];
           const deskCount = officeDeskCount(agent);
           const subDesks = Array.from({ length: deskCount }, (_, idx) => renderOfficeDesk(agent, idx + 1, recent[idx] || null)).join('');
-          const hidden = summary.hiddenTotal ? `과거/숨김 ${summary.hiddenTotal}` : '';
+          const hidden = summary.hiddenTotal ? ` · 과거/숨김 ${summary.hiddenTotal}` : '';
           return `
-            <article class="office-partition" data-agent-id="${escapeHtml(agent.id)}">
-              <div class="office-head">
-                <div>
-                  <div class="office-team-name">${escapeHtml(profile.icon || '🏢')} ${escapeHtml(profile.title)}</div>
-                </div>
-                <div class="office-capacity" title="보조 책상 ${deskCount}칸${hidden ? ` · ${hidden}` : ''}">${deskCount}</div>
-              </div>
+            <section class="office-zone" data-agent-id="${escapeHtml(agent.id)}">
+              <div class="zone-marker" title="${escapeHtml(profile.title)} · ${escapeHtml(profile.role || '')}">${escapeHtml(profile.icon || '🏢')}</div>
+              <div class="office-capacity" title="보조 책상 ${deskCount}칸${hidden}">${deskCount}</div>
               <div class="floor-plan">
                 ${renderOfficeDesk(agent, 0)}
                 ${subDesks}
               </div>
-            </article>`;
+            </section>`;
         }).join('');
+        officeLayout.innerHTML = `
+          <div class="office-room">
+            <div class="office-zones">${zones}</div>
+            <div class="office-door" aria-hidden="true"></div>
+          </div>`;
         officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {
           button.addEventListener('click', () => {
             const agentId = button.getAttribute('data-office-chat');
