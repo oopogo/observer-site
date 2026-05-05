@@ -1872,13 +1872,13 @@
 
 
       const OFFICE_PROFILES = {
-        main: { title: '밀레느 팀', role: '메인 업무 지휘 · 긴 작업 분배 · 사용자 대화 중심', desks: 4, icon: '🎮', label: '밀레느' },
-        observer: { title: '관제/복구 팀', role: 'OpenClaw 상태 감시 · UI/설정 진단 · 복구 작업', desks: 3, icon: '👁️', label: '관제' },
-        mediacontentproducer: { title: '미디어 제작 팀', role: '콘텐츠 기획 · 자료 조사 · 제작 파이프라인', desks: 4, icon: '🎬', label: '미디어' },
+        main: { title: '밀레느 팀', role: '메인 업무 지휘 · 긴 작업 분배 · 사용자 대화 중심', desks: 8, icon: '🎮', label: '밀레느' },
+        observer: { title: '관제/복구 팀', role: 'OpenClaw 상태 감시 · UI/설정 진단 · 복구 작업', desks: 8, icon: '👁️', label: '관제' },
+        mediacontentproducer: { title: '미디어 제작 팀', role: '콘텐츠 기획 · 자료 조사 · 제작 파이프라인', desks: 8, icon: '🎬', label: '미디어' },
       };
 
       function officeProfile(agent) {
-        return OFFICE_PROFILES[agent.id] || { title: `${agent.name || agent.id} 팀`, role: agent.role || '역할 미지정 에이전트', desks: 3, label: agent.name || agent.id };
+        return OFFICE_PROFILES[agent.id] || { title: `${agent.name || agent.id} 팀`, role: agent.role || '역할 미지정 에이전트', desks: 8, label: agent.name || agent.id };
       }
 
       function officeDeskCount(agent) {
