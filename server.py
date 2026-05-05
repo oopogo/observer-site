@@ -483,6 +483,7 @@ INTERNAL_STATUS_PREFIXES = (
     "응답 대기가 만료",
     "응답 도착",
     "전달됨.",
+    "No response from OpenClaw",
 )
 
 INTERNAL_STATUS_SUBSTRINGS = (

@@ -1736,7 +1736,7 @@
             if (payload && typeof payload.runId === 'string' && ['started', 'running', 'queued', 'pending'].includes(String(payload.status || '').toLowerCase())) return true;
           } catch (_) {}
         }
-        return value.startsWith('백그라운드 실행을 시작') || value.startsWith('전달됨.') || value.startsWith('응답 도착') || value.startsWith('응답 대기가 만료');
+        return value.startsWith('백그라운드 실행을 시작') || value.startsWith('전달됨.') || value.startsWith('응답 도착') || value.startsWith('응답 대기가 만료') || value.startsWith('No response from OpenClaw');
       }
 
       function isDisplayableHiddenMessage(msg) {
