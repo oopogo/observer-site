@@ -465,10 +465,41 @@ def wait_for_agent_reply(session_key: str, after_ms: int, timeout_seconds: int =
     return None
 
 
+INTERNAL_STATUS_PREFIXES = (
+    "백그라운드 실행을 시작",
+    "메시지는 일반 세션",
+    "응답 대기가 만료",
+    "응답 도착",
+    "전달됨.",
+)
+
+INTERNAL_STATUS_SUBSTRINGS = (
+    "응답 연결이 잠시 끊겨",
+    "응답 대기가 만료",
+)
+
+import re as _re_internal_status
+_INTERNAL_RUNID_PATTERN = _re_internal_status.compile(r'"runId"\s*:\s*"[0-9a-fA-F-]{8,}"')
+
+
 def is_internal_status_text(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return True
+    # Raw assistant envelope dumps leaked from other agents (thinking/toolCall arrays).
+    if stripped.startswith('{') and (
+        '"thinking"' in stripped or '"toolCall"' in stripped or '"toolUse"' in stripped
+        or '"thinkingSignature"' in stripped
+    ):
+        return True
+    # Internal reasoning scratchpads that start with a **Heading** followed by English prose.
+    if stripped.startswith('**'):
+        head_end = stripped.find('**', 2)
+        if 0 < head_end < 120 and '\n' in stripped[head_end:head_end + 400]:
+            after = stripped[head_end + 2:].lstrip()
+            if after and after[0].isascii() and after[0].isalpha():
+                return True
+    # JSON transport payloads (runId/status/started ...)
     if stripped.startswith('{'):
         try:
             payload = json.loads(stripped)
@@ -476,14 +507,16 @@ def is_internal_status_text(text: str) -> bool:
                 return True
         except Exception:
             pass
-    bad_prefixes = (
-        "백그라운드 실행을 시작",
-        "메시지는 일반 세션",
-        "응답 대기가 만료",
-        "응답 도착",
-        "전달됨.",
-    )
-    return stripped.startswith(bad_prefixes)
+    # Bare runId JSON anywhere at the very start of a short message
+    if len(stripped) < 400 and _INTERNAL_RUNID_PATTERN.search(stripped):
+        if '"status"' in stripped or '"messageSeq"' in stripped:
+            return True
+    if stripped.startswith(INTERNAL_STATUS_PREFIXES):
+        return True
+    for needle in INTERNAL_STATUS_SUBSTRINGS:
+        if needle in stripped:
+            return True
+    return False
 
 
 def validate_chat_message(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> None:
@@ -584,25 +617,47 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             raw = res.read().decode("utf-8", errors="replace")
         payload = json.loads(raw) if raw.strip().startswith(("{", "[")) else raw
         text = extract_response_text(payload)
+        # /v1/responses often returns a transport status (runId/started) for long turns.
+        # Treat that as "not a real final reply" and wait for the agent's actual answer
+        # by re-reading the session transcript. Never surface the transport JSON to the user.
         if not text or is_internal_status_text(text):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=180)
         if not text or is_internal_status_text(text):
-            text = "실패: 에이전트 최종 응답을 받지 못했습니다. 내부 실행 상태만 도착했습니다."
+            text = "실패: 에이전트 최종 응답을 받지 못했습니다. 내부 실행 상태만 도착했습니다. 다시 시도해 주세요."
+            status_meta = {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"}
+        else:
+            status_meta = {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"}
         replace_history_message(
             agent_id,
             request_id,
             "system",
             text,
-            {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"},
+            status_meta,
         )
     except Exception as exc:
-        replace_history_message(
-            agent_id,
-            request_id,
-            "system",
-            f"실패: 에이전트 최종 응답을 받지 못했습니다. {exc}",
-            {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key},
-        )
+        # Transport error — still try the session transcript once before giving up, because
+        # the agent may have completed even though our HTTP stream died.
+        recovered = None
+        try:
+            recovered = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=60)
+        except Exception:
+            recovered = None
+        if recovered and not is_internal_status_text(recovered):
+            replace_history_message(
+                agent_id,
+                request_id,
+                "system",
+                recovered,
+                {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant", "recovered": True},
+            )
+        else:
+            replace_history_message(
+                agent_id,
+                request_id,
+                "system",
+                f"실패: 에이전트 최종 응답을 받지 못했습니다. {exc}",
+                {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key},
+            )
 
 
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
