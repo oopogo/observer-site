@@ -913,6 +913,9 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
                 state = "working"
         elif normalized == "warning":
             state = "failed"
+        preview = session.get("lastMessagePreview") or session.get("title") or session.get("label") or ""
+        if not isinstance(preview, str):
+            preview = json.dumps(preview, ensure_ascii=False)[:500]
         item = {
             "key": key,
             "state": state,
@@ -920,6 +923,7 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
             "staleSeconds": stale_seconds,
             "model": session.get("model"),
             "tokens": int(float(session.get("totalTokens") or 0) or 0),
+            "preview": preview[:500],
         }
         subs.append(item)
     subs.sort(key=lambda item: item.get("staleSeconds", 0))

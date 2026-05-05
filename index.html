@@ -1202,6 +1202,15 @@
         transform: translateX(-50%);
       }
 
+      .desk .subagent-bubble {
+        left: 52%;
+        top: 10px;
+        max-width: 128px;
+        padding: 6px 8px;
+        font-size: 10.5px;
+        background: rgba(13, 28, 48, .78);
+      }
+
       .desk.away .office-bubble { display: none; }
 
       .office-bubble::after {
@@ -1731,7 +1740,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-05-2148';
+      const BUILD_ID = '2026-05-05-2210';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1762,7 +1771,8 @@
       function stateLabel(state, agent = null) {
         if (state === 'working') return '작업중';
         if (state === 'assigned') return agent && String(agent.statusText || '').includes('지연') ? '응답 지연' : '응답 대기';
-        if (state === 'warning') return '점검';
+        if (state === 'warning' || state === 'stale') return '점검';
+        if (state === 'failed') return '실패';
         return '응답 가능';
       }
 
@@ -1922,7 +1932,7 @@
       function deskStateClass(state) {
         if (state === 'working') return 'working';
         if (state === 'assigned') return 'assigned';
-        if (state === 'warning') return 'warning';
+        if (state === 'warning' || state === 'stale' || state === 'failed') return 'warning';
         return '';
       }
 
@@ -1941,6 +1951,17 @@
         return shortOfficeText(agent.detail || agent.statusText, '상태 확인 중');
       }
 
+      function subagentBubbleText(item, index) {
+        if (!item) return '';
+        const preview = shortOfficeText(item.preview || '', '');
+        if (preview) return preview;
+        const age = Number(item.staleSeconds || 0);
+        if (item.state === 'working') return age ? `작업 중 · ${age.toLocaleString()}초 전` : '작업 중';
+        if (item.state === 'stale') return '응답 지연 점검 중';
+        if (item.state === 'failed') return '실패 확인 중';
+        return `하위 작업 ${index}`;
+      }
+
       function renderOfficeDesk(agent, index, item = null) {
         const isMain = index === 0;
         const state = isMain ? agent.state : (item && item.state) || 'idle';
@@ -1956,6 +1977,7 @@
           <div class="desk ${isMain ? 'main-desk' : ''} ${awayClass} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(name)} · ${escapeHtml(label)} · ${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
             <div class="desk-illustration" aria-hidden="true"></div>
             ${isMain && agent.state !== 'idle' ? `<div class="office-bubble">${escapeHtml(officeBubbleText(agent))}</div>` : ''}
+            ${!isMain && item ? `<div class="office-bubble subagent-bubble">${escapeHtml(subagentBubbleText(item, index))}</div>` : ''}
             <div class="desk-top">
               <div class="desk-person">
                 <div class="desk-orb" data-office-person="${escapeHtml(agent.id)}">${orbContent}</div>
