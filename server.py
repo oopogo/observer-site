@@ -7,6 +7,8 @@ agent-chat bridge for the three allowed OpenClaw agents.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import subprocess
@@ -23,6 +25,8 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / ".data"
 HISTORY_PATH = DATA_DIR / "chat-history.json"
 SETTINGS_PATH = DATA_DIR / "agent-settings.json"
+READ_STATE_PATH = DATA_DIR / "chat-read-state.json"
+UPLOAD_DIR = DATA_DIR / "uploads"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -30,13 +34,21 @@ AGENTS = [
     {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
 CACHE_TTL_SECONDS = 8
+MAX_SETTINGS_BODY_BYTES = 16_000_000
+MAX_CHAT_IMAGE_BYTES = 8_000_000
+MAX_CHAT_IMAGES = 6
 AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
 CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
 NUDGE_INTERVAL_SECONDS = 900
-ACTIVE_SESSION_MAX_STALE_MS = 30 * 60 * 1000
+# 세션 목록의 running 상태는 비정상 종료/중단 뒤에도 남을 수 있다.
+# 관제 화면은 "현재 작업"만 보여야 하므로, 최근 갱신이 없는 running 세션은
+# 작업/지연으로 올리지 않고 고아 세션으로 제외한다.
+ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
+SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
+ASSIGNED_MAX_AGE_MS = 90 * 1000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -120,6 +132,43 @@ def save_single_agent_setting(agent_id: str, display_name: str | None, avatar: s
     return {"ok": True, "agentId": agent_id, "settings": current}
 
 
+
+def load_read_state() -> dict[str, int]:
+    try:
+        data = json.loads(READ_STATE_PATH.read_text())
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_read_state(data: dict[str, int]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    READ_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def mark_agent_read(agent_id: str) -> None:
+    state = load_read_state()
+    state[agent_id] = int(time.time() * 1000)
+    save_read_state(state)
+
+
+def unread_count(agent_id: str) -> int:
+    last_read = load_read_state().get(agent_id, 0)
+    count = 0
+    for item in load_history().get(agent_id, []):
+        ts = int(item.get("ts") or 0)
+        if ts <= last_read:
+            continue
+        role = item.get("role")
+        status = item.get("status")
+        content = str(item.get("content") or "")
+        if role == "user" or status in {"pending", "expired"}:
+            continue
+        if content.startswith("전달됨") or content.startswith("응답 대기"):
+            continue
+        count += 1
+    return count
+
 def parse_json_suffix(raw: str) -> Any:
     cleaned = raw.strip()
     starts = [i for i, ch in enumerate(cleaned) if ch in "{["]
@@ -142,7 +191,7 @@ def read_gateway_token() -> str:
 
 def read_body_json(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
     length = int(handler.headers.get("Content-Length") or "0")
-    if length <= 0 or length > 64_000:
+    if length <= 0 or length > MAX_SETTINGS_BODY_BYTES:
         raise ValueError("invalid request body size")
     raw = handler.rfile.read(length).decode("utf-8")
     data = json.loads(raw)
@@ -186,8 +235,95 @@ def replace_history_message(agent_id: str, request_id: str, role: str, content: 
     return None
 
 
-def public_history(agent_id: str) -> dict[str, Any]:
-    return {"ok": True, "agentId": agent_id, "messages": load_history().get(agent_id, [])[-80:]}
+def extract_session_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    parts: list[str] = []
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "text":
+                continue
+            text = item.get("text") or item.get("value")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+
+def observer_chat_session_key(agent_id: str) -> str:
+    # 관제 UI 채팅 전용 세션. 현재 관제/CLI 세션(agent:observer:observer-site)과
+    # 섞이면 도구 로그, 내부 runId, 상태문구가 채팅에 노출된다.
+    return f"agent:{agent_id}:observer-site-chat"
+
+def sync_gateway_session_history(agent_id: str) -> None:
+    session_key = observer_chat_session_key(agent_id)
+    try:
+        payload = gateway_call("sessions.get", {"key": session_key, "limit": 40}, timeout=12)
+    except Exception:
+        return
+    messages = payload.get("messages") if isinstance(payload, dict) else []
+    if not isinstance(messages, list):
+        return
+    history = load_history()
+    entries = history.setdefault(agent_id, [])
+    existing = {(item.get("role"), item.get("content")) for item in entries}
+    appended = False
+    latest_synced_ts = 0
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        text = extract_session_message_text(message)
+        if not text:
+            continue
+        key = ("assistant", text)
+        if key in existing:
+            continue
+        ts = to_epoch_ms(message.get("timestamp") or message.get("ts") or message.get("createdAt")) or int(time.time() * 1000)
+        entries.append({"role": "assistant", "content": text, "ts": ts, "status": "synced", "sessionKey": session_key})
+        existing.add(key)
+        latest_synced_ts = max(latest_synced_ts, ts)
+        appended = True
+    if appended:
+        for item in entries:
+            if item.get("role") == "system" and item.get("status") in {"pending", "fallback"} and int(item.get("ts") or 0) <= latest_synced_ts:
+                item["hidden"] = True
+                item["status"] = "done"
+                item["done"] = True
+                item.pop("pending", None)
+        del entries[:-80]
+        save_history(history)
+
+
+def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
+    # 중요: 채팅창은 로컬 브리지 히스토리만 즉시 반환한다.
+    # Gateway sessions.get 동기화는 느리고, observer처럼 작업 세션과 관제 채팅
+    # 세션키가 겹칠 때 도구 로그/다른 흐름을 채팅창에 섞는다.
+    if mark_read:
+        mark_agent_read(agent_id)
+    messages = load_history().get(agent_id, [])[-80:]
+
+    def is_visible(item: dict[str, Any]) -> bool:
+        if item.get("hidden"):
+            return False
+        status = item.get("status")
+        if status in {"stale-pending", "expired"}:
+            return False
+        if item.get("role") == "assistant" and status == "synced":
+            return False
+        content = str(item.get("content") or "")
+        if status == "pending":
+            return True
+        if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
+            return False
+        if content.startswith("백그라운드 실행을 시작"):
+            return False
+        return not is_internal_status_text(content)
+
+    visible = [item for item in messages if is_visible(item)]
+    return {"ok": True, "agentId": agent_id, "messages": visible[-80:]}
 
 
 def extract_response_text(payload: Any) -> str:
@@ -213,11 +349,74 @@ def extract_response_text(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)[:4000]
 
 
-def validate_chat_message(agent_id: str, message: str) -> None:
+
+def is_transport_status_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and isinstance(payload.get("runId"), str) and str(payload.get("status") or "").lower() in {"started", "running", "queued", "pending"}
+
+
+def latest_assistant_text_from_session(session_key: str, after_ms: int) -> str | None:
+    try:
+        payload = gateway_call("sessions.get", {"key": session_key, "limit": 20}, timeout=12)
+    except Exception:
+        return None
+    messages = payload.get("messages") if isinstance(payload, dict) else []
+    if not isinstance(messages, list):
+        return None
+    best_ts = 0
+    best_text = None
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        ts = to_epoch_ms(message.get("timestamp") or message.get("ts") or message.get("createdAt"))
+        if ts and ts < after_ms:
+            continue
+        text = extract_session_message_text(message)
+        if not text:
+            text = extract_response_text(message)
+        if not text or is_internal_status_text(text):
+            continue
+        if ts >= best_ts:
+            best_ts = ts
+            best_text = text
+    return best_text
+
+
+def wait_for_agent_reply(session_key: str, after_ms: int, timeout_seconds: int = 900) -> str | None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        text = latest_assistant_text_from_session(session_key, after_ms)
+        if text:
+            return text
+        time.sleep(1.0)
+    return None
+
+
+def is_internal_status_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if stripped.startswith('{'):
+        try:
+            payload = json.loads(stripped)
+            if is_transport_status_payload(payload):
+                return True
+        except Exception:
+            pass
+    bad_prefixes = (
+        "백그라운드 실행을 시작",
+        "메시지는 일반 세션",
+        "응답 대기가 만료",
+        "응답 도착",
+        "전달됨.",
+    )
+    return stripped.startswith(bad_prefixes)
+
+
+def validate_chat_message(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> None:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
-    if not message.strip():
-        raise ValueError("메시지가 비어 있습니다.")
+    if not message.strip() and not attachments:
+        raise ValueError("메시지나 이미지가 필요합니다.")
     if len(message) > 8000:
         raise ValueError("메시지가 너무 깁니다. 8000자 이하로 보내주세요.")
     lowered = message.lower()
@@ -233,9 +432,56 @@ def validate_chat_message(agent_id: str, message: str) -> None:
         raise ValueError("이 채팅창에서는 게이트웨이 재시작/중지/라이브 설정 변경 지시를 막아두었습니다.")
 
 
-def send_via_sessions_fallback(agent_id: str, message: str, timeout: int = 90) -> str:
-    """Fallback path when OpenResponses closes before returning text."""
-    session_key = f"agent:{agent_id}:observer-site"
+def save_chat_attachments(agent_id: str, request_id: str, attachments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    if len(attachments) > MAX_CHAT_IMAGES:
+        raise ValueError(f"이미지는 한 번에 {MAX_CHAT_IMAGES}개까지만 붙여넣을 수 있습니다.")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    saved: list[dict[str, Any]] = []
+    ext_by_mime = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
+    for index, item in enumerate(attachments, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("첨부 이미지 형식이 올바르지 않습니다.")
+        mime = str(item.get("mime") or item.get("type") or "")
+        data_url = str(item.get("dataUrl") or "")
+        if mime not in ext_by_mime or not data_url.startswith(f"data:{mime};base64,"):
+            raise ValueError("png/jpeg/webp/gif 이미지만 지원합니다.")
+        raw_b64 = data_url.split(",", 1)[1]
+        try:
+            binary = base64.b64decode(raw_b64, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("이미지 데이터를 읽지 못했습니다.")
+        if len(binary) > MAX_CHAT_IMAGE_BYTES:
+            raise ValueError("이미지는 파일당 8MB 이하만 붙여넣을 수 있습니다.")
+        ext = ext_by_mime[mime]
+        safe_agent = ''.join(ch for ch in agent_id if ch.isalnum() or ch in {'-', '_'})[:40] or 'agent'
+        path = UPLOAD_DIR / f"{int(time.time()*1000)}-{safe_agent}-{request_id[:8]}-{index}.{ext}"
+        path.write_bytes(binary)
+        saved.append({"path": str(path), "mime": mime, "size": len(binary), "name": item.get("name") or path.name})
+    return saved
+
+
+def build_message_with_attachments(message: str, saved: list[dict[str, Any]]) -> str:
+    text = message.strip()
+    if not saved:
+        return text
+    lines = [text] if text else ["이미지를 첨부합니다."]
+    lines.append("")
+    lines.append("첨부 이미지 파일:")
+    for item in saved:
+        lines.append(f"- {item['path']} ({item['mime']}, {item['size']} bytes)")
+    lines.append("위 로컬 이미지 파일을 필요하면 read 도구로 열어 확인하세요.")
+    return "\n".join(lines)
+
+
+def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
+    """Send a chat turn to the selected OpenClaw agent and write the real final reply.
+
+    Important: this bridge must not replace agent replies with local status macros.
+    The visible chat row starts as pending, then becomes either the agent's final
+    text or a concrete transport error.
+    """
     args = [
         OPENCLAW_BIN,
         "gateway",
@@ -244,7 +490,7 @@ def send_via_sessions_fallback(agent_id: str, message: str, timeout: int = 90) -
         "--expect-final",
         "--json",
         "--timeout",
-        str(timeout * 1000),
+        str(900_000),
         "--params",
         json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
     ]
@@ -252,85 +498,64 @@ def send_via_sessions_fallback(agent_id: str, message: str, timeout: int = 90) -
     env.pop("OPENCLAW_GATEWAY_URL", None)
     env.pop("OPENCLAW_API_URL", None)
     env["NO_COLOR"] = "1"
-    result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=timeout + 8)
-    raw = (result.stdout or result.stderr or "").strip()
-    if result.returncode != 0:
-        raise RuntimeError(raw or "fallback send failed")
-    payload = parse_json_suffix(raw)
-    text = extract_response_text(payload)
-    if text and text not in {"{}", "[]"}:
-        return text
-    status = payload.get("status") if isinstance(payload, dict) else None
-    run_id = payload.get("runId") if isinstance(payload, dict) else None
-    if status or run_id:
-        return f"메시지는 일반 세션 경로로 다시 전달했습니다. 상태: {status or '전달됨'}"
-    return "메시지는 일반 세션 경로로 다시 전달했습니다."
-
-
-def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
-    token = read_gateway_token()
-    body = json.dumps({
-        "model": f"openclaw:{agent_id}",
-        "input": message,
-        "stream": False,
-    }, ensure_ascii=False).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "x-openclaw-agent-id": agent_id,
-        "x-openclaw-session-key": session_key,
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request("http://127.0.0.1:18789/v1/responses", data=body, headers=headers, method="POST")
+    request_start_ms = int(time.time() * 1000) - 1000
     try:
-        with urllib.request.urlopen(req, timeout=180) as res:
-            raw = res.read().decode("utf-8", errors="replace")
-            payload = json.loads(raw) if raw.strip().startswith(("{", "[")) else raw
+        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=920)
+        raw = (result.stdout or result.stderr or "").strip()
+        if result.returncode != 0:
+            raise RuntimeError(raw or f"sessions.send failed with code {result.returncode}")
+        payload = parse_json_suffix(raw)
+        text = None
+        if is_transport_status_payload(payload):
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=900)
+        if not text:
             text = extract_response_text(payload)
-            replace_history_message(agent_id, request_id, "system", "응답 도착", {"status": "done", "done": True, "sessionKey": session_key})
-            append_history(agent_id, "assistant", text, {"sessionKey": session_key, "requestId": request_id, "status": "done"})
+        if not text or text in {"{}", "[]"} or is_internal_status_text(text):
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=120)
+        if not text or is_internal_status_text(text):
+            text = "실패: 내부 실행 상태만 받았고 최종 답변을 아직 찾지 못했습니다. 잠시 후 다시 확인해 주세요."
+        replace_history_message(
+            agent_id,
+            request_id,
+            "system",
+            text,
+            {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"},
+        )
     except Exception as exc:
-        try:
-            fallback_text = send_via_sessions_fallback(agent_id, message)
-            replace_history_message(
-                agent_id,
-                request_id,
-                "system",
-                "응답 연결이 잠시 끊겨 일반 세션 경로로 다시 전달했습니다.",
-                {"status": "fallback", "done": True, "sessionKey": session_key},
-            )
-            if fallback_text:
-                append_history(agent_id, "assistant", fallback_text, {"sessionKey": session_key, "requestId": request_id, "status": "fallback"})
-        except Exception as fallback_exc:
-            text = "응답 연결이 중간에 끊겼습니다. 메시지는 기록했지만, 에이전트 응답을 받지 못했습니다. 다시 보내주세요."
-            replace_history_message(
-                agent_id,
-                request_id,
-                "system",
-                text,
-                {"status": "error", "error": True, "done": True, "sessionKey": session_key, "detail": str(fallback_exc), "originalError": str(exc)},
-            )
+        replace_history_message(
+            agent_id,
+            request_id,
+            "system",
+            f"실패: 에이전트 최종 응답을 받지 못했습니다. {exc}",
+            {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key},
+        )
 
 
-def send_chat(agent_id: str, message: str) -> dict[str, Any]:
-    validate_chat_message(agent_id, message)
+def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    validate_chat_message(agent_id, message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    session_key = f"agent:{agent_id}:observer-site"
+    session_key = observer_chat_session_key(agent_id)
     request_id = str(uuid.uuid4())
-    append_history(agent_id, "user", message, {"requestId": request_id, "sessionKey": session_key})
+    saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
+    outbound_message = build_message_with_attachments(message, saved_attachments)
+    display_message = message.strip() or "이미지 첨부"
+    if saved_attachments:
+        display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
+    append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
-    worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, message, request_id), daemon=True)
+    worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_message, request_id), daemon=True)
     worker.start()
-    return {"ok": True, "accepted": True, "pending": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "history": load_history().get(agent_id, [])[-80:]}
+    history_payload = public_history(agent_id, mark_read=False)
+    return {"ok": True, "accepted": True, "pending": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
 
 
 def send_recovery_nudge(agent_id: str) -> dict[str, Any]:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    session_key = f"agent:{agent_id}:observer-site"
+    session_key = observer_chat_session_key(agent_id)
     message = (
-        "관제 화면에서 현재 작업이 지연 가능 상태로 표시됩니다. "
+        "관제 화면에서 현재 작업 중 상태로 표시됩니다. "
         "지금 실제 상태를 확인해서 짧게 보고하세요. "
         "반드시 현재 실행 중인지/막혔는지, 마지막으로 확인한 파일·로그·세션·작업 단위, 다음 조치를 포함하세요. "
         "게이트웨이/systemd/config 변경은 하지 마세요."
@@ -391,7 +616,7 @@ def get_agent_session_detail(agent_id: str) -> dict[str, Any]:
         raise ValueError("허용되지 않은 에이전트입니다.")
     summary = summarize_agents()
     agent = next((a for a in summary.get("agents", []) if a.get("id") == agent_id), None)
-    key = agent.get("latestSessionKey") if agent else f"agent:{agent_id}:observer-site"
+    key = agent.get("latestSessionKey") if agent else observer_chat_session_key(agent_id)
     messages_payload = gateway_call("sessions.get", {"key": key, "limit": 20}, timeout=18)
     messages = messages_payload.get("messages") if isinstance(messages_payload, dict) else []
     if not isinstance(messages, list):
@@ -413,7 +638,7 @@ def abort_agent_session(agent_id: str) -> dict[str, Any]:
         raise ValueError("허용되지 않은 에이전트입니다.")
     summary = summarize_agents()
     agent = next((a for a in summary.get("agents", []) if a.get("id") == agent_id), None)
-    key = agent.get("latestSessionKey") if agent else f"agent:{agent_id}:observer-site"
+    key = agent.get("latestSessionKey") if agent else observer_chat_session_key(agent_id)
     result = gateway_call("sessions.abort", {"key": key}, timeout=18)
     append_history(agent_id, "system", f"관제 화면에서 세션 중단을 요청했습니다: {key}", {"status": "abort-requested", "sessionKey": key})
     return {"ok": True, "agentId": agent_id, "sessionKey": key, "result": result, "history": load_history().get(agent_id, [])[-80:]}
@@ -509,7 +734,10 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
         normalized = normalize_status(status)
         state = "done"
         if normalized == "working":
-            state = "lag" if stale_seconds >= 180 else "working"
+            if stale_seconds * 1000 > SUBAGENT_ACTIVE_MAX_STALE_MS:
+                state = "stale"
+            else:
+                state = "working"
         elif normalized == "warning":
             state = "failed"
         item = {
@@ -522,7 +750,7 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
         }
         subs.append(item)
     subs.sort(key=lambda item: item.get("staleSeconds", 0))
-    visible = [item for item in subs if item["state"] in {"working", "lag"}]
+    visible = [item for item in subs if item["state"] == "working"]
     recent = visible[:12]
     return {
         "total": len(visible),
@@ -530,13 +758,44 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
         "recent": recent,
         "done": 0,
         "working": sum(1 for item in visible if item["state"] == "working"),
-        "lag": sum(1 for item in visible if item["state"] == "lag"),
+        "lag": 0,
         "failed": 0,
     }
 
 
+
+def latest_pending_assignment_ms(agent_id: str, now: int) -> int:
+    entries = load_history().get(agent_id, [])
+    latest = 0
+    for item in entries:
+        if item.get("role") != "system" or item.get("status") != "pending":
+            continue
+        if item.get("pending") is not True:
+            continue
+        ts = int(item.get("ts") or 0)
+        if ts and now - ts <= ASSIGNED_MAX_AGE_MS:
+            latest = max(latest, ts)
+    return latest
+
+
+def expire_stale_pending_assignments(now: int | None = None) -> int:
+    now = now or int(time.time() * 1000)
+    history = load_history()
+    changed = 0
+    for entries in history.values():
+        for item in entries:
+            if item.get("role") == "system" and item.get("status") == "pending" and int(item.get("ts") or 0) and now - int(item.get("ts") or 0) > ASSIGNED_MAX_AGE_MS:
+                item["status"] = "stale-pending"
+                item["pending"] = False
+                item["hidden"] = True
+                changed += 1
+    if changed:
+        save_history(history)
+    return changed
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
+    expire_stale_pending_assignments(now)
     sessions_data = gateway_call("sessions.list", timeout=18)
     sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
     if not isinstance(sessions, list):
@@ -560,17 +819,18 @@ def summarize_agents() -> dict[str, Any]:
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
 
-        state = "working" if recent_active else "idle"
-        current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else 0
+        pending_assignment_ms = latest_pending_assignment_ms(base["id"], now)
+        state = "working" if recent_active else ("assigned" if pending_assignment_ms else "idle")
+        current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else pending_assignment_ms
         current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
         age_ms = max(0, now - current_started) if current_started else 0
         stale_ms = max(0, now - current_updated) if current_updated else 0
         raw_status = str(current.get("status") or "unknown") if current else "none"
 
-        # 현재 작업중 여부는 running/queued/processing 세션을 우선한다.
-        # 실행 중 세션의 갱신 지연만으로는 점검 처리하지 않는다.
-        # 점검은 명시적인 실패/오류/중단 상태가 최근에 관측될 때만 표시한다.
-        is_lagging = bool(recent_active and stale_ms >= 180_000)
+        # 현재 작업중 여부는 최근 갱신된 running/queued/processing 세션만 인정한다.
+        # 오래 갱신되지 않은 running 세션은 중단/종료 뒤 남은 고아 상태일 수 있으므로
+        # 지연 가능/점검으로 올리지 않고 제외한다.
+        is_lagging = False
         if not active and normalize_status(raw_status) == "warning" and stale_ms < 120_000:
             state = "warning"
 
@@ -578,16 +838,19 @@ def summarize_agents() -> dict[str, Any]:
         status_text = "응답 가능"
         if state == "working":
             status_text = "작업 중"
+        elif state == "assigned":
+            status_text = "업무 할당됨"
         elif state == "warning":
             status_text = "점검 필요"
 
         detail = "현재 생성 중 아님 · 최근 실행 세션 없음"
-        if current:
+        if state == "assigned":
+            detail = f"업무 할당됨 · 실행 시작 대기 중 · 할당 {max(0, (now - pending_assignment_ms) // 1000):,}초 전"
+        if current and state != "assigned":
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"
             if recent_active:
-                lag_note = " · 응답 지연 가능" if is_lagging else ""
-                detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전{lag_note} · {model} · {total_tokens:,} tokens"
+                detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전 · {model} · {total_tokens:,} tokens"
             else:
                 stale_note = f" · 고아 running 세션 {len(stale_active)}개 제외" if stale_active else ""
                 recent_note = f" · 최근 활동 {stale_ms // 1000:,}초 전" if current_updated else ""
@@ -603,6 +866,7 @@ def summarize_agents() -> dict[str, Any]:
             "activeSessionCount": len(recent_active),
             "staleActiveSessionCount": len(stale_active),
             "isWorkingNow": bool(recent_active),
+            "isAssigned": state == "assigned",
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
@@ -610,6 +874,7 @@ def summarize_agents() -> dict[str, Any]:
             "latestSessionKey": current.get("key") if current else None,
             "latestPreview": current.get("lastMessagePreview") if current else None,
             "subagents": subagent_summary,
+            "unreadCount": unread_count(base["id"]),
         }
         output.append(agent_payload)
         maybe_auto_nudge(agent_payload)
@@ -622,6 +887,7 @@ def summarize_agents() -> dict[str, Any]:
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),
             "working": sum(1 for a in output if a["state"] == "working"),
+            "assigned": sum(1 for a in output if a["state"] == "assigned"),
             "warning": sum(1 for a in output if a["state"] == "warning"),
         },
     }
@@ -640,7 +906,9 @@ def html_escape(value: Any) -> str:
 
 def state_label(state: str, agent: dict[str, Any] | None = None) -> str:
     if state == "working":
-        return "작업중 · 지연 가능" if agent and agent.get("isLagging") else "작업중"
+        return "작업중"
+    if state == "assigned":
+        return "업무 할당됨"
     if state == "warning":
         return "점검"
     return "대기"
@@ -648,7 +916,9 @@ def state_label(state: str, agent: dict[str, Any] | None = None) -> str:
 
 def state_badge_class(state: str, agent: dict[str, Any] | None = None) -> str:
     if state == "working":
-        return "lag" if agent and agent.get("isLagging") else "work"
+        return "work"
+    if state == "assigned":
+        return "assigned"
     if state == "warning":
         return "warn"
     return "idle"
@@ -661,9 +931,8 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     avatar = agent.get("avatar") if isinstance(agent.get("avatar"), str) else None
     orb_html = f'<img src="{html_escape(avatar)}" alt="" />' if avatar else orb
     detail = html_escape(agent.get("detail") or agent.get("statusText") or "상태 확인 중")
-    working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else "현재 생성 중 아님"
-    lag_tag = "응답 지연 가능" if agent.get("isLagging") else None
-    tags = [agent.get("role"), working_tag, lag_tag, *(agent.get("tags") or []), agent.get("id")]
+    working_tag = f"실행중 {agent.get('activeSessionCount') or 1}" if agent.get("isWorkingNow") else ("업무 할당됨" if agent.get("isAssigned") else "현재 생성 중 아님")
+    tags = [agent.get("role"), working_tag, *(agent.get("tags") or []), agent.get("id")]
     tag_html = "".join(f'<span class="tag">{html_escape(tag)}</span>' for tag in tags[:6] if tag)
     subagents = agent.get("subagents") or {}
     dots = "".join(f'<span class="sub-dot {html_escape(item.get("state"))}" title="{html_escape(item.get("status"))} · {html_escape(item.get("staleSeconds"))}초 전"></span>' for item in (subagents.get("recent") or [])[:12])
@@ -671,11 +940,11 @@ def render_agent_card(agent: dict[str, Any]) -> str:
     if subagents.get("total"):
         hidden = subagents.get("hiddenTotal") or 0
         hidden_text = f" · 숨김 {html_escape(hidden)}" if hidden else ""
-        sub_html = f'<div class="subagent-strip"><div class="subagent-dots">{dots}</div><div class="subagent-text">실행 중 하위 작업 {html_escape(subagents.get("total"))} · 정상 {html_escape(subagents.get("working"))} · 지연 {html_escape(subagents.get("lag"))}{hidden_text}</div></div>'
+        sub_html = f'<div class="subagent-strip"><div class="subagent-dots">{dots}</div><div class="subagent-text">실행 중 하위 작업 {html_escape(subagents.get("total"))} · 정상 {html_escape(subagents.get("working"))}{hidden_text}</div></div>'
     badge = state_label(state, agent)
     badge_class = state_badge_class(state, agent)
     work_class = "" if state == "idle" else "work"
-    lag_class = "lag" if agent.get("isLagging") else ""
+    lag_class = ""
     warn_class = "warn" if state == "warning" else ""
     accent = "idle" if state == "idle" else "work"
     return f"""
@@ -770,7 +1039,8 @@ class Handler(SimpleHTTPRequestHandler):
             if agent_id not in {a["id"] for a in AGENTS}:
                 self.json_response({"ok": False, "error": "허용되지 않은 에이전트입니다."}, 400)
                 return
-            self.json_response(public_history(agent_id))
+            mark_read = (qs.get("markRead") or ["0"])[0] in {"1", "true", "yes"}
+            self.json_response(public_history(agent_id, mark_read=mark_read))
             return
         if path == "/api/agents":
             cached = cache_get("agents")
@@ -811,7 +1081,7 @@ class Handler(SimpleHTTPRequestHandler):
             agent_id = str(data.get("agentId") or "observer")
             if path == "/api/chat/send":
                 message = str(data.get("message") or "")
-                result = send_chat(agent_id, message)
+                result = send_chat(agent_id, message, data.get("attachments") if isinstance(data.get("attachments"), list) else None)
                 self.json_response(result, 200 if result.get("ok") else 504)
                 return
             if path == "/api/agent/recover":
