@@ -1151,15 +1151,52 @@
       .desk-top { position: absolute; z-index: 2; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: end; justify-content: space-between; gap: 8px; pointer-events: none; }
       .desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .desk-orb { width: 36px; height: 36px; border-radius: 15px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.14); font-weight: 950; box-shadow: 0 10px 26px rgba(0,0,0,.22); }
+      .desk-orb::before { content: ""; position: absolute; width: 46px; height: 26px; border-radius: 18px 18px 10px 10px; background: rgba(255,255,255,.10); transform: translateY(22px); z-index: -1; }
       .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
+      .desk.away .desk-orb { display: none; }
       .desk .state-badge { min-width: 0; width: 10px; height: 10px; padding: 0; border-radius: 999px; overflow: hidden; text-indent: -999px; }
       .desk.main-desk .state-badge { width: 14px; height: 14px; }
       .desk.main-desk:hover .desk-illustration { transform: translateY(-2px); }
 
+      .office-lounge {
+        position: absolute;
+        left: 50%;
+        bottom: 28px;
+        width: 300px;
+        height: 148px;
+        transform: translateX(-50%);
+        z-index: 3;
+        background: url('assets/office-sofa.svg') center bottom / contain no-repeat;
+        pointer-events: none;
+      }
+
+      .lounge-agent {
+        position: absolute;
+        bottom: 46px;
+        width: 42px;
+        height: 42px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: rgba(255,255,255,.16);
+        border: 1px solid rgba(255,255,255,.18);
+        box-shadow: 0 12px 28px rgba(0,0,0,.28);
+        font-weight: 950;
+        pointer-events: auto;
+        cursor: pointer;
+      }
+
+      .lounge-agent img { width: 100%; height: 100%; object-fit: cover; }
+      .lounge-agent:nth-child(1) { left: 68px; }
+      .lounge-agent:nth-child(2) { left: 128px; }
+      .lounge-agent:nth-child(3) { left: 188px; }
+      .lounge-agent:nth-child(n+4) { display: none; }
+
       @media (max-width: 980px) {
         .office-zones { grid-template-columns: 1fr; }
         .office-zone { min-height: 420px; padding-bottom: 24px; }
-        .office-meeting { display: none; }
+        .office-meeting, .office-lounge { display: none; }
       }
 
       .view.hidden { display: none; }
@@ -1407,6 +1444,7 @@
               <section class="office-zone"><div class="zone-marker">🏢</div></section>
             </div>
             <div class="office-meeting" aria-hidden="true"></div>
+            <div class="office-lounge" aria-label="휴게실"></div>
             <div class="office-door" aria-hidden="true"></div>
           </div>
         </section>
@@ -1730,8 +1768,9 @@
           : (item ? (item.status || '최근 하위 작업') : '작업이 생기면 여기에 배치됩니다');
         const orbContent = isMain && agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : (isMain ? escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1)) : (item ? '•' : '+'));
         const tilt = isMain ? 0 : (((index % 3) - 1) * 1.6);
+        const awayClass = isMain && agent.state === 'idle' ? 'away' : '';
         return `
-          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(name)} · ${escapeHtml(label)} · ${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
+          <div class="desk ${isMain ? 'main-desk' : ''} ${awayClass} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(name)} · ${escapeHtml(label)} · ${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
             <div class="desk-illustration" aria-hidden="true"></div>
             <div class="desk-top">
               <div class="desk-person">
@@ -1742,11 +1781,18 @@
           </div>`;
       }
 
+      function renderLoungeAgents(agents) {
+        return agents.filter((agent) => agent.state === 'idle').map((agent) => {
+          const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1));
+          return `<button class="lounge-agent" type="button" title="${escapeHtml(agent.name || agent.id)} 휴식 중" data-office-chat="${escapeHtml(agent.id)}">${orbContent}</button>`;
+        }).join('');
+      }
+
       function renderOfficeView() {
         if (!officeLayout) return;
         const agents = latestAgents || [];
         if (!agents.length) {
-          officeLayout.innerHTML = '<div class="office-room"><div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div><div class="office-shelf" aria-hidden="true"></div><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-meeting" aria-hidden="true"></div><div class="office-door" aria-hidden="true"></div></div>';
+          officeLayout.innerHTML = '<div class="office-room"><div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div><div class="office-shelf" aria-hidden="true"></div><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-meeting" aria-hidden="true"></div><div class="office-lounge" aria-label="휴게실"></div><div class="office-door" aria-hidden="true"></div></div>';
           return;
         }
         const zones = agents.map((agent) => {
@@ -1766,12 +1812,14 @@
               </div>
             </section>`;
         }).join('');
+        const loungeAgents = renderLoungeAgents(agents);
         officeLayout.innerHTML = `
           <div class="office-room">
             <div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div>
             <div class="office-shelf" aria-hidden="true"></div>
             <div class="office-zones">${zones}</div>
             <div class="office-meeting" aria-hidden="true"></div>
+            <div class="office-lounge" aria-label="휴게실">${loungeAgents}</div>
             <div class="office-door" aria-hidden="true"></div>
           </div>`;
         officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {

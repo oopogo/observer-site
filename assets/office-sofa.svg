@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 130">
+  <defs>
+    <linearGradient id="sofa" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#89a7c2"/><stop offset="1" stop-color="#3b5369"/></linearGradient>
+  </defs>
+  <ellipse cx="130" cy="116" rx="94" ry="11" fill="#000" opacity=".24"/>
+  <path d="M50 50h160a22 22 0 0 1 22 22v33H28V72a22 22 0 0 1 22-22z" fill="url(#sofa)"/>
+  <path d="M48 34h164a18 18 0 0 1 18 18v29H30V52a18 18 0 0 1 18-18z" fill="#516d85"/>
+  <path d="M52 61h156a16 16 0 0 1 16 16v23H36V77a16 16 0 0 1 16-16z" fill="#6f8da6"/>
+  <path d="M40 101h180v13H40z" fill="#2e4152"/>
+  <path d="M58 114h16v10H58zm128 0h16v10h-16z" fill="#233443"/>
+</svg>
