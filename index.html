@@ -1243,6 +1243,42 @@
         line-height: 1.35;
       }
 
+      .walking-agent {
+        position: fixed;
+        z-index: 9999;
+        width: 42px;
+        height: 42px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: rgba(255,255,255,.18);
+        border: 1px solid rgba(255,255,255,.22);
+        box-shadow: 0 16px 34px rgba(0,0,0,.30);
+        pointer-events: none;
+        animation: officeWalk 820ms ease-in-out forwards;
+      }
+
+      .walking-agent img { width: 100%; height: 100%; object-fit: cover; }
+
+      .walking-agent::after {
+        content: "···";
+        position: absolute;
+        left: -22px;
+        bottom: -5px;
+        color: rgba(223,247,255,.55);
+        letter-spacing: 3px;
+        font-size: 16px;
+        transform: rotate(-12deg);
+      }
+
+      @keyframes officeWalk {
+        0% { transform: translate(0, 0) scale(.92) rotate(-2deg); opacity: .35; }
+        30% { transform: translate(calc(var(--walk-x) * .34), calc(var(--walk-y) * .34 - 16px)) scale(1) rotate(3deg); opacity: .95; }
+        60% { transform: translate(calc(var(--walk-x) * .68), calc(var(--walk-y) * .68 - 8px)) scale(1) rotate(-3deg); opacity: .95; }
+        100% { transform: translate(var(--walk-x), var(--walk-y)) scale(.94) rotate(0); opacity: 0; }
+      }
+
       @media (max-width: 980px) {
         .office-zones { grid-template-columns: 1fr; }
         .office-zone { min-height: 420px; padding-bottom: 24px; }
@@ -1624,6 +1660,8 @@
       const openChatPanels = new Map();
       let selectedAgent = 'observer';
       let latestAgents = [];
+      let previousOfficePositions = new Map();
+      let officeRenderCount = 0;
       let sending = false;
       let historyPollTimer = null;
       let chatRequestSeq = 0;
@@ -1840,7 +1878,7 @@
             ${isMain && agent.state !== 'idle' ? `<div class="office-bubble">${escapeHtml(officeBubbleText(agent))}</div>` : ''}
             <div class="desk-top">
               <div class="desk-person">
-                <div class="desk-orb">${orbContent}</div>
+                <div class="desk-orb" data-office-person="${escapeHtml(agent.id)}">${orbContent}</div>
               </div>
               <span class="state-badge ${stateBadgeClass(state, agent)}">${stateLabel(state, agent)}</span>
             </div>
@@ -1851,14 +1889,50 @@
         const idleAgents = agents.filter((agent) => agent.state === 'idle');
         const avatars = idleAgents.map((agent) => {
           const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1));
-          return `<button class="lounge-agent" type="button" title="${escapeHtml(agent.name || agent.id)} 휴식 중" data-office-chat="${escapeHtml(agent.id)}">${orbContent}</button>`;
+          return `<button class="lounge-agent" type="button" title="${escapeHtml(agent.name || agent.id)} 휴식 중" data-office-chat="${escapeHtml(agent.id)}" data-office-person="${escapeHtml(agent.id)}">${orbContent}</button>`;
         }).join('');
         const bubble = idleAgents.length ? `<div class="lounge-bubble">${idleAgents.length === 1 ? '휴게실에서 대기 중' : `${idleAgents.length}명 휴식 중`}</div>` : '';
         return `${bubble}${avatars}`;
       }
 
+      function officePersonCenter(el) {
+        const rect = el.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, html: el.innerHTML };
+      }
+
+      function collectOfficePositions() {
+        const positions = new Map();
+        if (!officeLayout) return positions;
+        officeLayout.querySelectorAll('[data-office-person]').forEach((el) => {
+          const id = el.getAttribute('data-office-person');
+          if (id) positions.set(id, officePersonCenter(el));
+        });
+        return positions;
+      }
+
+      function animateOfficeMoves(before, after) {
+        if (!before || !after || !before.size || !after.size) return;
+        after.forEach((next, id) => {
+          const prev = before.get(id);
+          if (!prev) return;
+          const dx = next.x - prev.x;
+          const dy = next.y - prev.y;
+          if (Math.hypot(dx, dy) < 18) return;
+          const walker = document.createElement('div');
+          walker.className = 'walking-agent';
+          walker.innerHTML = next.html || prev.html || '';
+          walker.style.left = `${prev.x - 21}px`;
+          walker.style.top = `${prev.y - 21}px`;
+          walker.style.setProperty('--walk-x', `${dx}px`);
+          walker.style.setProperty('--walk-y', `${dy}px`);
+          document.body.appendChild(walker);
+          window.setTimeout(() => walker.remove(), 900);
+        });
+      }
+
       function renderOfficeView() {
         if (!officeLayout) return;
+        const beforePositions = collectOfficePositions();
         const agents = latestAgents || [];
         if (!agents.length) {
           officeLayout.innerHTML = '<div class="office-room"><div class="office-window-row"><span class="office-window"></span><span class="office-window"></span><span class="office-window"></span></div><div class="office-shelf" aria-hidden="true"></div><div class="office-zones"><section class="office-zone"><div class="zone-marker">🏢</div></section></div><div class="office-meeting" aria-hidden="true"></div><div class="office-lounge" aria-label="휴게실"></div><div class="office-door" aria-hidden="true"></div></div>';
@@ -1891,6 +1965,10 @@
             <div class="office-lounge" aria-label="휴게실">${loungeAgents}</div>
             <div class="office-door" aria-hidden="true"></div>
           </div>`;
+        const afterPositions = collectOfficePositions();
+        if (officeRenderCount > 0) animateOfficeMoves(beforePositions, afterPositions);
+        previousOfficePositions = afterPositions;
+        officeRenderCount += 1;
         officeLayout.querySelectorAll('[data-office-chat]').forEach((button) => {
           button.addEventListener('click', () => {
             const agentId = button.getAttribute('data-office-chat');
