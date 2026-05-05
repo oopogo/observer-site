@@ -1265,9 +1265,11 @@
       let chatRequestSeq = 0;
       let agentsPollTimer = null;
       let agentsLoading = false;
-      const AGENTS_REFRESH_MS = 10000;
+      const AGENTS_REFRESH_IDLE_MS = 10000;
+      const AGENTS_REFRESH_ACTIVE_MS = 5000;
+      const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-05-1609';
+      const BUILD_ID = '2026-05-05-1845';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1574,7 +1576,7 @@
         const active = agents.filter((agent) => agent.state !== 'idle');
         for (const agent of idle) idleAgents.appendChild(agentCard(agent));
         for (const agent of active) workingAgents.appendChild(agentCard(agent));
-        if (!idle.length) idleAgents.innerHTML = '<article class="agent"><div class="orb">✓</div><div><div class="name">응답 가능 없음</div><div class="status">모든 에이전트가 작업 중이거나 확인 필요 상태입니다.</div></div></article>';
+        if (!idle.length) idleAgents.innerHTML = '';
         if (!active.length) workingAgents.innerHTML = '';
         if (!multiChatView.classList.contains('hidden')) renderMultiChatAgentList();
       }
@@ -1614,7 +1616,13 @@
         }
       }
 
-      function startRefreshRunner(durationMs = AGENTS_REFRESH_MS) {
+      function agentsRefreshIntervalMs() {
+        if (document.hidden) return AGENTS_REFRESH_BACKGROUND_MS;
+        const hasActiveAgent = latestAgents.some((agent) => agent.state !== 'idle' || agent.isWorkingNow || agent.isAssigned || agent.isLagging);
+        return hasActiveAgent ? AGENTS_REFRESH_ACTIVE_MS : AGENTS_REFRESH_IDLE_MS;
+      }
+
+      function startRefreshRunner(durationMs = agentsRefreshIntervalMs()) {
         const runner = document.querySelector('.runner');
         if (!runner) return;
         runner.style.animation = 'none';
@@ -1641,8 +1649,9 @@
       async function pollAgentsLoop() {
         if (agentsPollTimer) window.clearTimeout(agentsPollTimer);
         await loadAgents();
-        startRefreshRunner(AGENTS_REFRESH_MS);
-        agentsPollTimer = window.setTimeout(pollAgentsLoop, AGENTS_REFRESH_MS);
+        const nextRefreshMs = agentsRefreshIntervalMs();
+        startRefreshRunner(nextRefreshMs);
+        agentsPollTimer = window.setTimeout(pollAgentsLoop, nextRefreshMs);
       }
 
       async function loadHistory(agentId, markRead = false) {
@@ -1985,6 +1994,13 @@
 
       agentTabButton.addEventListener('click', () => switchMainView('agent'));
       chatTabButton.addEventListener('click', () => switchMainView('chat'));
+
+      document.addEventListener('visibilitychange', () => {
+        if (agentsPollTimer) window.clearTimeout(agentsPollTimer);
+        const nextRefreshMs = agentsRefreshIntervalMs();
+        startRefreshRunner(nextRefreshMs);
+        agentsPollTimer = window.setTimeout(pollAgentsLoop, nextRefreshMs);
+      });
 
       loadGatewayStatus();
       pollAgentsLoop();
