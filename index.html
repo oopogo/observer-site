@@ -1265,6 +1265,13 @@
       .walking-agent {
         position: fixed;
         z-index: 9999;
+        width: 42px;
+        height: 42px;
+        pointer-events: none;
+        will-change: transform, opacity;
+      }
+
+      .walking-avatar {
         box-sizing: border-box;
         width: 42px;
         height: 42px;
@@ -1276,28 +1283,49 @@
         background: rgba(255,255,255,.18);
         border: 1px solid rgba(255,255,255,.22);
         box-shadow: 0 16px 34px rgba(0,0,0,.30);
-        pointer-events: none;
-        animation: officeWalk 820ms ease-in-out forwards;
+        animation: officeWalkBob 260ms ease-in-out infinite alternate;
       }
 
       .walking-agent img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
 
-      .walking-agent::after {
-        content: "···";
+      .walking-shadow {
         position: absolute;
-        left: -22px;
-        bottom: -5px;
-        color: rgba(223,247,255,.55);
-        letter-spacing: 3px;
-        font-size: 16px;
-        transform: rotate(-12deg);
+        left: 8px;
+        bottom: -8px;
+        width: 28px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(0,0,0,.28);
+        filter: blur(2px);
+        animation: officeWalkShadow 260ms ease-in-out infinite alternate;
       }
 
-      @keyframes officeWalk {
-        0% { transform: translate(0, 0) scale(.92) rotate(-2deg); opacity: .35; }
-        30% { transform: translate(calc(var(--walk-x) * .34), calc(var(--walk-y) * .34 - 16px)) scale(1) rotate(3deg); opacity: .95; }
-        60% { transform: translate(calc(var(--walk-x) * .68), calc(var(--walk-y) * .68 - 8px)) scale(1) rotate(-3deg); opacity: .95; }
-        100% { transform: translate(var(--walk-x), var(--walk-y)) scale(.94) rotate(0); opacity: 0; }
+      .footstep {
+        position: fixed;
+        z-index: 9998;
+        width: 10px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(223,247,255,.34);
+        pointer-events: none;
+        transform: rotate(var(--foot-rotate, 0deg));
+        animation: footFade 900ms ease-out forwards;
+      }
+
+      @keyframes officeWalkBob {
+        from { transform: translateY(0) rotate(-4deg) scale(.98); }
+        to { transform: translateY(-7px) rotate(4deg) scale(1.02); }
+      }
+
+      @keyframes officeWalkShadow {
+        from { transform: scaleX(1); opacity: .42; }
+        to { transform: scaleX(.72); opacity: .24; }
+      }
+
+      @keyframes footFade {
+        0% { opacity: 0; transform: translateY(2px) rotate(var(--foot-rotate, 0deg)) scale(.7); }
+        18% { opacity: .75; }
+        100% { opacity: 0; transform: translateY(8px) rotate(var(--foot-rotate, 0deg)) scale(1.15); }
       }
 
       @media (max-width: 980px) {
@@ -1938,16 +1966,42 @@
           if (!prev) return;
           const dx = next.x - prev.x;
           const dy = next.y - prev.y;
-          if (Math.hypot(dx, dy) < 18) return;
+          const distance = Math.hypot(dx, dy);
+          if (distance < 18) return;
           const walker = document.createElement('div');
           walker.className = 'walking-agent';
-          walker.innerHTML = next.html || prev.html || '';
+          walker.innerHTML = `<div class="walking-shadow"></div><div class="walking-avatar">${next.html || prev.html || ''}</div>`;
           walker.style.left = `${prev.x - 21}px`;
           walker.style.top = `${prev.y - 21}px`;
-          walker.style.setProperty('--walk-x', `${dx}px`);
-          walker.style.setProperty('--walk-y', `${dy}px`);
           document.body.appendChild(walker);
-          window.setTimeout(() => walker.remove(), 900);
+
+          const duration = Math.min(1450, Math.max(760, distance * 2.1));
+          const lift = Math.min(42, Math.max(18, distance * 0.08));
+          const side = Math.abs(dx) > Math.abs(dy) ? Math.sign(dx || 1) : -Math.sign(dy || 1);
+          const midX = dx * 0.52 + side * 18;
+          const midY = dy * 0.52 - lift;
+          const movement = walker.animate([
+            { transform: 'translate(0px, 0px)', opacity: 0.15, offset: 0 },
+            { transform: `translate(${dx * 0.18}px, ${dy * 0.18 - 10}px)`, opacity: 0.95, offset: 0.18 },
+            { transform: `translate(${midX}px, ${midY}px)`, opacity: 1, offset: 0.55 },
+            { transform: `translate(${dx * 0.86}px, ${dy * 0.86 - 6}px)`, opacity: 0.95, offset: 0.86 },
+            { transform: `translate(${dx}px, ${dy}px)`, opacity: 0, offset: 1 },
+          ], { duration, easing: 'cubic-bezier(.2,.72,.18,1)', fill: 'forwards' });
+
+          const steps = Math.min(7, Math.max(3, Math.round(distance / 90)));
+          for (let i = 1; i <= steps; i += 1) {
+            const t = i / (steps + 1);
+            const foot = document.createElement('span');
+            foot.className = 'footstep';
+            foot.style.left = `${prev.x + dx * t + (i % 2 ? -5 : 5)}px`;
+            foot.style.top = `${prev.y + dy * t + 18}px`;
+            foot.style.setProperty('--foot-rotate', `${Math.atan2(dy, dx) * 180 / Math.PI + (i % 2 ? -12 : 12)}deg`);
+            foot.style.animationDelay = `${t * duration * 0.65}ms`;
+            document.body.appendChild(foot);
+            window.setTimeout(() => foot.remove(), duration + 950);
+          }
+
+          movement.finished.catch(() => {}).finally(() => walker.remove());
         });
       }
 
