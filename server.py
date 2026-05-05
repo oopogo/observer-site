@@ -941,26 +941,30 @@ def latest_pending_assignment_ms(agent_id: str, now: int) -> int:
     entries = load_history().get(agent_id, [])
     latest = 0
     for item in entries:
-        if item.get("role") != "system" or item.get("status") != "pending":
+        if item.get("role") != "system" or item.get("status") not in {"pending", "delayed-pending"}:
             continue
         if item.get("pending") is not True:
             continue
         ts = int(item.get("ts") or 0)
-        if ts and now - ts <= ASSIGNED_MAX_AGE_MS:
+        if ts:
             latest = max(latest, ts)
     return latest
 
 
 def expire_stale_pending_assignments(now: int | None = None) -> int:
+    # Do not hide unresolved operator questions. Hiding a stale pending row makes
+    # the agent card return to idle even though the user still has no answer.
+    # Keep it pending and mark it delayed until the worker replaces it with
+    # done/error.
     now = now or int(time.time() * 1000)
     history = load_history()
     changed = 0
     for entries in history.values():
         for item in entries:
             if item.get("role") == "system" and item.get("status") == "pending" and int(item.get("ts") or 0) and now - int(item.get("ts") or 0) > ASSIGNED_MAX_AGE_MS:
-                item["status"] = "stale-pending"
-                item["pending"] = False
-                item["hidden"] = True
+                item["status"] = "delayed-pending"
+                item["pending"] = True
+                item.pop("hidden", None)
                 changed += 1
     if changed:
         save_history(history)
@@ -1013,13 +1017,15 @@ def summarize_agents() -> dict[str, Any]:
         if state == "working":
             status_text = "작업 중"
         elif state == "assigned":
-            status_text = "업무 할당됨"
+            status_text = "응답 대기"
         elif state == "warning":
             status_text = "점검 필요"
 
         detail = "현재 생성 중 아님 · 최근 실행 세션 없음"
         if state == "assigned":
-            detail = f"업무 할당됨 · 실행 시작 대기 중 · 할당 {max(0, (now - pending_assignment_ms) // 1000):,}초 전"
+            pending_age_s = max(0, (now - pending_assignment_ms) // 1000)
+            status_text = "응답 지연" if pending_age_s * 1000 > ASSIGNED_MAX_AGE_MS else "응답 대기"
+            detail = f"{status_text} · 아직 최종 답변 없음 · 요청 {pending_age_s:,}초 전"
         if current and state != "assigned":
             total_tokens = int(float(current.get("totalTokens") or 0) or 0)
             model = current.get("model") or "unknown"

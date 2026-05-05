@@ -1547,7 +1547,7 @@
 
       <section class="summary" id="statusSummary" aria-label="상태별 요약">
         <div class="metric"><strong id="countIdle">-</strong><span>대기</span></div>
-        <div class="metric"><strong id="countAssigned">-</strong><span>업무 할당됨</span></div>
+        <div class="metric"><strong id="countAssigned">-</strong><span>응답 대기</span></div>
         <div class="metric"><strong id="countWorking">-</strong><span>작업</span></div>
         <div class="metric"><strong id="countLagging">-</strong><span>지연</span></div>
         <div class="metric"><strong id="countWarning">-</strong><span>점검 필요</span></div>
@@ -1761,7 +1761,7 @@
 
       function stateLabel(state, agent = null) {
         if (state === 'working') return '작업중';
-        if (state === 'assigned') return '업무 할당됨';
+        if (state === 'assigned') return agent && String(agent.statusText || '').includes('지연') ? '응답 지연' : '응답 대기';
         if (state === 'warning') return '점검';
         return '응답 가능';
       }
@@ -1860,7 +1860,7 @@
       }
 
       function renderTags(agent) {
-        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.isAssigned ? '업무 할당됨' : '현재 생성 중 아님');
+        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.isAssigned ? (String(agent.statusText || '').includes('지연') ? '응답 지연' : '응답 대기') : '현재 생성 중 아님');
         const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
@@ -2256,7 +2256,7 @@
         countLagging.textContent = laggingCount;
         countWarning.textContent = warningCount;
         idleLabel.textContent = `${idleCount} 응답 가능`;
-        workingLabel.textContent = `${assignedCount + workingCount + laggingCount + warningCount} 할당/작업/지연/점검`;
+        workingLabel.textContent = `${assignedCount + workingCount + laggingCount + warningCount} 응답대기/작업/지연/점검`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
