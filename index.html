@@ -1158,6 +1158,40 @@
       .desk.main-desk .state-badge { width: 14px; height: 14px; }
       .desk.main-desk:hover .desk-illustration { transform: translateY(-2px); }
 
+      .office-bubble {
+        position: absolute;
+        z-index: 3;
+        max-width: 142px;
+        padding: 7px 9px;
+        border-radius: 14px 14px 14px 4px;
+        color: rgba(238,246,255,.94);
+        background: rgba(8, 18, 32, .74);
+        border: 1px solid rgba(255,255,255,.14);
+        box-shadow: 0 12px 30px rgba(0,0,0,.24);
+        font-size: 11px;
+        line-height: 1.35;
+        letter-spacing: -0.02em;
+        pointer-events: none;
+      }
+
+      .desk .office-bubble {
+        left: 54%;
+        top: 4px;
+        transform: translateX(-50%);
+      }
+
+      .desk.away .office-bubble { display: none; }
+
+      .office-bubble::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        bottom: -6px;
+        border-width: 6px 6px 0 0;
+        border-style: solid;
+        border-color: rgba(8, 18, 32, .74) transparent transparent transparent;
+      }
+
       .office-lounge {
         position: absolute;
         left: 50%;
@@ -1192,6 +1226,22 @@
       .lounge-agent:nth-child(2) { left: 128px; }
       .lounge-agent:nth-child(3) { left: 188px; }
       .lounge-agent:nth-child(n+4) { display: none; }
+
+      .lounge-bubble {
+        position: absolute;
+        left: 50%;
+        top: -12px;
+        transform: translateX(-50%);
+        max-width: 190px;
+        padding: 7px 10px;
+        border-radius: 16px 16px 16px 5px;
+        color: rgba(238,246,255,.92);
+        background: rgba(8,18,32,.72);
+        border: 1px solid rgba(255,255,255,.13);
+        box-shadow: 0 12px 30px rgba(0,0,0,.24);
+        font-size: 11px;
+        line-height: 1.35;
+      }
 
       @media (max-width: 980px) {
         .office-zones { grid-template-columns: 1fr; }
@@ -1758,6 +1808,21 @@
         return '';
       }
 
+      function shortOfficeText(text, fallback = '') {
+        const value = String(text || fallback || '').replace(/\s+/g, ' ').trim();
+        if (!value) return '';
+        return value.length > 34 ? `${value.slice(0, 33)}…` : value;
+      }
+
+      function officeBubbleText(agent) {
+        if (!agent) return '';
+        if (agent.state === 'idle') return '잠깐 쉬는 중';
+        if (agent.state === 'assigned') return shortOfficeText(agent.detail || agent.statusText, '응답 준비 중');
+        if (agent.state === 'working') return shortOfficeText(agent.detail || agent.statusText, '작업 중');
+        if (agent.state === 'warning') return shortOfficeText(agent.detail || agent.statusText, '점검 필요');
+        return shortOfficeText(agent.detail || agent.statusText, '상태 확인 중');
+      }
+
       function renderOfficeDesk(agent, index, item = null) {
         const isMain = index === 0;
         const state = isMain ? agent.state : (item && item.state) || 'idle';
@@ -1772,6 +1837,7 @@
         return `
           <div class="desk ${isMain ? 'main-desk' : ''} ${awayClass} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(name)} · ${escapeHtml(label)} · ${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
             <div class="desk-illustration" aria-hidden="true"></div>
+            ${isMain && agent.state !== 'idle' ? `<div class="office-bubble">${escapeHtml(officeBubbleText(agent))}</div>` : ''}
             <div class="desk-top">
               <div class="desk-person">
                 <div class="desk-orb">${orbContent}</div>
@@ -1782,10 +1848,13 @@
       }
 
       function renderLoungeAgents(agents) {
-        return agents.filter((agent) => agent.state === 'idle').map((agent) => {
+        const idleAgents = agents.filter((agent) => agent.state === 'idle');
+        const avatars = idleAgents.map((agent) => {
           const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1));
           return `<button class="lounge-agent" type="button" title="${escapeHtml(agent.name || agent.id)} 휴식 중" data-office-chat="${escapeHtml(agent.id)}">${orbContent}</button>`;
         }).join('');
+        const bubble = idleAgents.length ? `<div class="lounge-bubble">${idleAgents.length === 1 ? '휴게실에서 대기 중' : `${idleAgents.length}명 휴식 중`}</div>` : '';
+        return `${bubble}${avatars}`;
       }
 
       function renderOfficeView() {
