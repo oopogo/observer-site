@@ -1016,11 +1016,7 @@
         position: relative;
         min-height: 128px;
         border-radius: 26px;
-        padding: 10px 10px 12px;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        gap: 6px;
+        padding: 8px;
         border: 1px solid rgba(255,255,255,.09);
         background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
         transform: rotate(var(--desk-tilt, 0deg));
@@ -1049,12 +1045,13 @@
 
       .desk.empty .desk-illustration { background-image: url('assets/office-empty-desk.svg'); opacity: .8; }
 
-      .desk-top { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .desk-top { position: absolute; z-index: 2; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: end; justify-content: space-between; gap: 8px; pointer-events: none; }
       .desk-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .desk-orb { width: 36px; height: 36px; border-radius: 15px; display: grid; place-items: center; overflow: hidden; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.14); font-weight: 950; box-shadow: 0 10px 26px rgba(0,0,0,.22); }
       .desk-orb img { width: 100%; height: 100%; object-fit: cover; }
-      .desk-name { font-weight: 950; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .desk-label { color: rgba(203,214,234,.72); font-size: 11px; }
+      .desk-name, .desk-label { display: none; }
+      .desk .state-badge { min-width: 0; width: 10px; height: 10px; padding: 0; border-radius: 999px; overflow: hidden; text-indent: -999px; }
+      .desk.main-desk .state-badge { width: 14px; height: 14px; }
       .desk-action { position: relative; z-index: 1; margin-top: 2px; align-self: flex-start; }
       .desk.main-desk { cursor: pointer; }
       .desk.main-desk:hover { border-color: color-mix(in srgb, var(--team-accent) 68%, rgba(255,255,255,.18)); }
@@ -1626,15 +1623,11 @@
         const orbContent = isMain && agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : (isMain ? escapeHtml(agent.orb || String(agent.name || agent.id).slice(0, 1)) : (item ? '•' : '+'));
         const tilt = isMain ? 0 : (((index % 3) - 1) * 1.6);
         return `
-          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
+          <div class="desk ${isMain ? 'main-desk' : ''} ${item ? '' : (!isMain ? 'empty' : '')} ${deskStateClass(state)}" style="--desk-tilt:${tilt}deg" title="${escapeHtml(name)} · ${escapeHtml(label)} · ${escapeHtml(status)}" ${isMain ? `data-office-chat="${escapeHtml(agent.id)}"` : ''}>
             <div class="desk-illustration" aria-hidden="true"></div>
             <div class="desk-top">
               <div class="desk-person">
                 <div class="desk-orb">${orbContent}</div>
-                <div>
-                  <div class="desk-name">${escapeHtml(name)}</div>
-                  <div class="desk-label">${escapeHtml(label)}</div>
-                </div>
               </div>
               <span class="state-badge ${stateBadgeClass(state, agent)}">${stateLabel(state, agent)}</span>
             </div>
