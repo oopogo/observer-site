@@ -237,8 +237,7 @@ def replace_history_message(agent_id: str, request_id: str, role: str, content: 
     return None
 
 
-def extract_session_message_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
+def extract_content_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
     parts: list[str] = []
@@ -252,6 +251,10 @@ def extract_session_message_text(message: dict[str, Any]) -> str:
             if isinstance(text, str) and text.strip():
                 parts.append(text.strip())
     return "\n".join(parts).strip()
+
+
+def extract_session_message_text(message: dict[str, Any]) -> str:
+    return extract_content_text(message.get("content"))
 
 
 
@@ -389,6 +392,10 @@ def extract_response_text(payload: Any) -> str:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        if key == "content":
+            content_text = extract_content_text(value)
+            if content_text:
+                return content_text
     parts: list[str] = []
     for item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
         if not isinstance(item, dict):
@@ -455,6 +462,12 @@ def is_internal_status_text(text: str) -> bool:
             payload = json.loads(stripped)
             if is_transport_status_payload(payload):
                 return True
+            if isinstance(payload, dict) and payload.get("role") == "assistant":
+                content = payload.get("content")
+                # Reasoning/tool-only assistant payloads are internal artifacts,
+                # not user-visible completion reports.
+                if isinstance(content, list) and not extract_content_text(content):
+                    return True
         except Exception:
             pass
     bad_prefixes = (
@@ -864,6 +877,8 @@ def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
             continue
         if item.get("status") not in {"done", "error"}:
             continue
+        if is_internal_status_text(str(item.get("content") or "")):
+            continue
         latest = max(latest, int(item.get("ts") or 0))
     return latest
 
@@ -881,6 +896,16 @@ def latest_pending_assignment_ms(agent_id: str, now: int) -> int:
         if ts and ts > latest_terminal_ts:
             latest = max(latest, ts)
     return latest
+
+
+def latest_unanswered_user_ms(agent_id: str) -> int:
+    entries = load_history().get(agent_id, [])
+    latest_terminal_ts = terminal_reply_ts(entries)
+    latest_user_ts = 0
+    for item in entries:
+        if item.get("role") == "user":
+            latest_user_ts = max(latest_user_ts, int(item.get("ts") or 0))
+    return latest_user_ts if latest_user_ts > latest_terminal_ts else 0
 
 
 def expire_stale_pending_assignments(now: int | None = None) -> int:
@@ -910,8 +935,24 @@ def expire_stale_pending_assignments(now: int | None = None) -> int:
         save_history(history)
     return changed
 
+
+def sanitize_internal_done_messages() -> int:
+    history = load_history()
+    changed = 0
+    for entries in history.values():
+        for item in entries:
+            if item.get("role") == "assistant" and item.get("status") == "done" and is_internal_status_text(str(item.get("content") or "")):
+                item["status"] = "internal-status"
+                item["hidden"] = True
+                item["pending"] = False
+                changed += 1
+    if changed:
+        save_history(history)
+    return changed
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
+    sanitize_internal_done_messages()
     expire_stale_pending_assignments(now)
     sessions_data = gateway_call("sessions.list", timeout=18)
     sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
@@ -936,7 +977,7 @@ def summarize_agents() -> dict[str, Any]:
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
 
-        pending_assignment_ms = latest_pending_assignment_ms(base["id"], now)
+        pending_assignment_ms = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
         state = "working" if recent_active else ("assigned" if pending_assignment_ms else "idle")
         current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else pending_assignment_ms
         current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
