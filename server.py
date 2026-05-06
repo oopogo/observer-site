@@ -857,8 +857,20 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
 
 
 
+def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
+    latest = 0
+    for item in entries:
+        if item.get("role") != "assistant":
+            continue
+        if item.get("status") not in {"done", "error"}:
+            continue
+        latest = max(latest, int(item.get("ts") or 0))
+    return latest
+
+
 def latest_pending_assignment_ms(agent_id: str, now: int) -> int:
     entries = load_history().get(agent_id, [])
+    latest_terminal_ts = terminal_reply_ts(entries)
     latest = 0
     for item in entries:
         if item.get("role") != "system" or item.get("status") not in {"pending", "delayed-pending"}:
@@ -866,22 +878,30 @@ def latest_pending_assignment_ms(agent_id: str, now: int) -> int:
         if item.get("pending") is not True:
             continue
         ts = int(item.get("ts") or 0)
-        if ts:
+        if ts and ts > latest_terminal_ts:
             latest = max(latest, ts)
     return latest
 
 
 def expire_stale_pending_assignments(now: int | None = None) -> int:
-    # Do not hide unresolved operator questions. Hiding a stale pending row makes
-    # the agent card return to idle even though the user still has no answer.
-    # Keep it pending and mark it delayed until the worker replaces it with
-    # done/error.
+    # Keep genuinely unresolved questions as pending/delayed, but clear pending
+    # rows once a later assistant done/error exists. Otherwise finished chats can
+    # stay stuck as "응답 지연" for hours.
     now = now or int(time.time() * 1000)
     history = load_history()
     changed = 0
     for entries in history.values():
+        latest_terminal_ts = terminal_reply_ts(entries)
         for item in entries:
-            if item.get("role") == "system" and item.get("status") == "pending" and int(item.get("ts") or 0) and now - int(item.get("ts") or 0) > ASSIGNED_MAX_AGE_MS:
+            if item.get("role") != "system" or item.get("status") not in {"pending", "delayed-pending"}:
+                continue
+            ts = int(item.get("ts") or 0)
+            if ts and ts <= latest_terminal_ts:
+                item["status"] = "resolved-pending"
+                item["pending"] = False
+                item["hidden"] = True
+                changed += 1
+            elif item.get("status") == "pending" and ts and now - ts > ASSIGNED_MAX_AGE_MS:
                 item["status"] = "delayed-pending"
                 item["pending"] = True
                 item.pop("hidden", None)

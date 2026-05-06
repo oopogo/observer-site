@@ -1764,7 +1764,7 @@
       }
 
       function visibleMessages(messages) {
-        const hiddenStatuses = new Set(['stale-pending', 'expired', 'recovery-requested', 'abort-requested', 'filtered-rawdump', 'filtered-reasoning', 'internal-status']);
+        const hiddenStatuses = new Set(['stale-pending', 'resolved-pending', 'expired', 'recovery-requested', 'abort-requested', 'filtered-rawdump', 'filtered-reasoning', 'internal-status']);
         return (messages || []).filter((msg) => (isDisplayableHiddenMessage(msg) || !msg.hidden) && !hiddenStatuses.has(msg.status) && (msg.status === 'pending' || !isInternalStatusMessage(msg.content)));
       }
 
