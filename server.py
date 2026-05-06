@@ -508,6 +508,7 @@ def wait_for_agent_reply(session_key: str, after_ms: int, timeout_seconds: int =
 
 def is_internal_status_text(text: str) -> bool:
     stripped = text.strip()
+    stripped = stripped.removeprefix("⚠️").strip()
     if not stripped:
         return True
     if stripped.startswith('{'):
@@ -556,13 +557,13 @@ def is_progress_only_report_text(text: str) -> bool:
     )
     if any(marker in value for marker in completion_markers):
         return False
-    progress_markers = (
-        "시작했습니다", "시작합니다", "진행하겠습니다", "진행합니다", "들어갑니다",
-        "확인하겠습니다", "고치겠습니다", "수정하겠습니다", "보겠습니다",
-        "완료되면", "끝나면", "보고하겠습니다", "기다려", "대기해",
-        "바로", "먼저", "이제", "작업 방향", "계획",
-    )
-    return any(marker in value for marker in progress_markers)
+    # Only block very explicit start-only reports. Do not treat ordinary answers
+    # like "확인했습니다 ... 기준을 바꾸겠습니다" as incomplete.
+    future_report_markers = ("완료되면", "완료 전까지", "끝나면", "보고하겠습니다")
+    start_markers = ("시작합니다", "시작했습니다", "진행하겠습니다", "진행합니다", "착수합니다")
+    if any(marker in value for marker in future_report_markers):
+        return True
+    return any(marker in value for marker in start_markers) and len(value) < 500
 
 
 def validate_chat_message(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> None:
