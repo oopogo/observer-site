@@ -806,6 +806,36 @@ def abort_agent_session(agent_id: str) -> dict[str, Any]:
     return {"ok": True, "agentId": agent_id, "sessionKey": key, "result": result, "history": load_history().get(agent_id, [])[-80:]}
 
 
+def abort_orphan_subagent_sessions(agent_id: str) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    now = int(time.time() * 1000)
+    sessions_data = gateway_call("sessions.list", timeout=18)
+    sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
+    if not isinstance(sessions, list):
+        sessions = []
+    summary = summarize_subagents(agent_id, sessions, now)
+    candidates = [item for item in summary.get("recent", []) if item.get("cleanupKind") == "orphan-running"]
+    results = []
+    for item in candidates:
+        key = str(item.get("key") or "")
+        if not key:
+            continue
+        try:
+            result = gateway_call("sessions.abort", {"key": key}, timeout=18)
+            results.append({"key": key, "ok": True, "result": result})
+        except Exception as exc:
+            results.append({"key": key, "ok": False, "error": str(exc)})
+    append_history(
+        agent_id,
+        "system",
+        f"고아 running 서브에이전트 중단 요청: 후보 {len(candidates)}개, 성공 {sum(1 for r in results if r.get('ok'))}개",
+        {"status": "cleanup-orphans", "hidden": True, "results": results},
+    )
+    invalidate_agents_cache()
+    return {"ok": True, "agentId": agent_id, "candidates": len(candidates), "aborted": sum(1 for r in results if r.get("ok")), "results": results}
+
+
 def gateway_call(method: str, params: dict[str, Any] | None = None, timeout: int = 8) -> Any:
     args = [OPENCLAW_BIN, "gateway", "call", method, "--json", "--timeout", str(timeout * 1000)]
     if params is not None:
@@ -1354,6 +1384,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/abort":
                 result = abort_agent_session(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/cleanup-orphans":
+                result = abort_orphan_subagent_sessions(agent_id)
                 self.json_response(result)
                 return
             if path == "/api/agent/settings":
