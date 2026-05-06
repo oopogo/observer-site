@@ -48,7 +48,7 @@ NUDGE_INTERVAL_SECONDS = 900
 # 작업/지연으로 올리지 않고 고아 세션으로 제외한다.
 ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
 SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
-ASSIGNED_MAX_AGE_MS = 90 * 1000
+ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
