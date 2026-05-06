@@ -49,6 +49,7 @@ NUDGE_INTERVAL_SECONDS = 900
 ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
 SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
 ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
+DEFAULT_CONTEXT_MAX_TOKENS = 200_000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1073,6 +1074,9 @@ def summarize_agents() -> dict[str, Any]:
             state = "warning"
 
         latest_updated = current_updated
+        context_tokens = int(float(current.get("totalTokens") or 0) or 0) if current else 0
+        context_max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
+        context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
         status_text = "응답 가능"
         if state == "working":
             status_text = "작업 중"
@@ -1087,7 +1091,7 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "응답 지연" if pending_age_s * 1000 > ASSIGNED_MAX_AGE_MS else "응답 대기"
             detail = f"{status_text} · 아직 최종 답변 없음 · 요청 {pending_age_s:,}초 전"
         if current and state != "assigned":
-            total_tokens = int(float(current.get("totalTokens") or 0) or 0)
+            total_tokens = context_tokens
             model = current.get("model") or "unknown"
             if recent_active:
                 detail = f"현재 작업 중: {raw_status} · 마지막 갱신 {stale_ms // 1000:,}초 전 · {model} · {total_tokens:,} tokens"
@@ -1113,6 +1117,9 @@ def summarize_agents() -> dict[str, Any]:
             "latestUpdatedAt": latest_updated,
             "latestSessionKey": current.get("key") if current else None,
             "latestPreview": current.get("lastMessagePreview") if current else None,
+            "contextTokens": context_tokens,
+            "contextMaxTokens": context_max_tokens,
+            "contextRemainingPercent": context_remaining_percent,
             "subagents": subagent_summary,
             "unreadCount": unread_count(base["id"]),
         }
