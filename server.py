@@ -814,8 +814,21 @@ def abort_orphan_subagent_sessions(agent_id: str) -> dict[str, Any]:
     sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
     if not isinstance(sessions, list):
         sessions = []
-    summary = summarize_subagents(agent_id, sessions, now)
-    candidates = [item for item in summary.get("recent", []) if item.get("cleanupKind") == "orphan-running"]
+    candidates = []
+    for session in sessions:
+        key = str(session.get("key") or "")
+        if ":subagent:" not in key and not session.get("spawnedBy"):
+            continue
+        if subagent_owner_id(session) != agent_id:
+            continue
+        status = str(session.get("status") or "")
+        if normalize_status(status) != "working":
+            continue
+        updated = to_epoch_ms(session.get("updatedAt") or session.get("startedAt"))
+        stale_ms = max(0, now - updated) if updated else ORPHAN_RUNNING_CANDIDATE_MS + 1
+        if stale_ms < ORPHAN_RUNNING_CANDIDATE_MS:
+            continue
+        candidates.append({"key": key, "status": status, "staleSeconds": stale_ms // 1000})
     results = []
     for item in candidates:
         key = str(item.get("key") or "")
