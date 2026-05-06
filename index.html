@@ -549,6 +549,8 @@
       .sub-dot.working { background: var(--work); box-shadow: 0 0 10px rgba(98, 230, 155, .42); }
       .sub-dot.lag { background: var(--lag); box-shadow: 0 0 10px rgba(255, 184, 107, .42); }
       .sub-dot.failed { background: var(--danger); box-shadow: 0 0 10px rgba(255, 107, 138, .42); }
+      .sub-dot.stale { background: var(--lag); box-shadow: 0 0 10px rgba(255, 184, 107, .42); }
+      .sub-dot.cleanup { outline: 2px solid rgba(255,255,255,.62); outline-offset: 2px; }
 
       .subagent-text {
         color: rgba(203, 214, 234, .72);
@@ -1784,7 +1786,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-06-2205';
+      const BUILD_ID = '2026-05-06-2247';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1912,12 +1914,23 @@
         return 'idle';
       }
 
+      function cleanupLabel(kind) {
+        if (kind === 'orphan-running') return '고아 running 후보';
+        if (kind === 'archive-candidate') return '보관 후보';
+        return '';
+      }
+
       function renderSubagents(agent) {
         const summary = agent.subagents || {};
-        if (!summary.total) return '';
-        const dots = (summary.recent || []).slice(0, 12).map((item) => `<span class="sub-dot ${escapeHtml(item.state || 'done')}" title="${escapeHtml(item.status || '')} · ${escapeHtml(item.staleSeconds || 0)}초 전"></span>`).join('');
+        if (!summary.total && !summary.cleanupCandidates) return '';
+        const dots = (summary.recent || []).slice(0, 12).map((item) => {
+          const cleanup = item.cleanupKind ? ` cleanup` : '';
+          const title = `${item.cleanupKind ? cleanupLabel(item.cleanupKind) + ' · ' : ''}${item.status || ''} · ${item.staleSeconds || 0}초 전`;
+          return `<span class="sub-dot ${escapeHtml(item.state || 'done')}${cleanup}" title="${escapeHtml(title)}"></span>`;
+        }).join('');
         const hidden = summary.hiddenTotal ? ` · 숨김 ${summary.hiddenTotal}` : '';
-        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">실행 중 하위 작업 ${summary.total || 0} · 정상 ${summary.working || 0}${hidden}</div></div>`;
+        const cleanup = summary.cleanupCandidates ? ` · 정리 후보 ${summary.cleanupCandidates}(고아 ${summary.orphanRunningCandidates || 0}, 보관 ${summary.archiveCandidates || 0})` : '';
+        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">실행 중 ${summary.total || 0} · 완료 ${summary.done || 0} · 실패 ${summary.failed || 0}${cleanup}${hidden}</div></div>`;
       }
 
       function formatTokenCount(value) {
@@ -2520,6 +2533,7 @@
           `세션: ${payload.sessionKey || '-'}`,
           ...runtimeLine,
           `상태: ${agent.statusText || '-'} · ${agent.detail || ''}`,
+          agent.subagents ? `정리 후보: ${agent.subagents.cleanupCandidates || 0}개 · 고아 ${agent.subagents.orphanRunningCandidates || 0} · 보관 ${agent.subagents.archiveCandidates || 0}` : '',
           '',
           '마지막 메시지:',
         ];

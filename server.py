@@ -50,6 +50,8 @@ ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
 SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
 ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
 DEFAULT_CONTEXT_MAX_TOKENS = 200_000
+ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
+ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -903,27 +905,38 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
         preview = session.get("lastMessagePreview") or session.get("title") or session.get("label") or ""
         if not isinstance(preview, str):
             preview = json.dumps(preview, ensure_ascii=False)[:500]
+        tokens = int(float(session.get("totalTokens") or 0) or 0)
+        cleanup_kind = None
+        if state == "stale" and stale_seconds * 1000 >= ORPHAN_RUNNING_CANDIDATE_MS:
+            cleanup_kind = "orphan-running"
+        elif state in {"done", "failed"} and stale_seconds * 1000 >= ARCHIVE_CANDIDATE_MS:
+            cleanup_kind = "archive-candidate"
         item = {
             "key": key,
             "state": state,
             "status": status,
             "staleSeconds": stale_seconds,
             "model": session.get("model"),
-            "tokens": int(float(session.get("totalTokens") or 0) or 0),
+            "tokens": tokens,
             "preview": preview[:500],
+            "cleanupKind": cleanup_kind,
         }
         subs.append(item)
     subs.sort(key=lambda item: item.get("staleSeconds", 0))
     visible = [item for item in subs if item["state"] == "working"]
-    recent = visible[:12]
+    cleanup_candidates = [item for item in subs if item.get("cleanupKind")]
+    recent = (visible + cleanup_candidates)[:12]
     return {
         "total": len(visible),
-        "hiddenTotal": max(0, len(subs) - len(visible)),
+        "hiddenTotal": max(0, len(subs) - len(recent)),
         "recent": recent,
-        "done": 0,
+        "done": sum(1 for item in subs if item["state"] == "done"),
         "working": sum(1 for item in visible if item["state"] == "working"),
-        "lag": 0,
-        "failed": 0,
+        "lag": sum(1 for item in subs if item["state"] == "stale"),
+        "failed": sum(1 for item in subs if item["state"] == "failed"),
+        "cleanupCandidates": len(cleanup_candidates),
+        "orphanRunningCandidates": sum(1 for item in cleanup_candidates if item.get("cleanupKind") == "orphan-running"),
+        "archiveCandidates": sum(1 for item in cleanup_candidates if item.get("cleanupKind") == "archive-candidate"),
     }
 
 
