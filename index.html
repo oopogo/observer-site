@@ -1698,6 +1698,7 @@
               <button class="recover-button" type="button" id="detailButton">마지막 메시지/로그</button>
               <button class="recover-button" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
               <button class="recover-button" type="button" id="cleanupOrphansButton">고아 중단</button>
+              <button class="recover-button" type="button" id="archiveCandidatesButton">보관 후보 archive</button>
               <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
             </div>
             <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “마지막 메시지/로그”를 누르세요.</div>
@@ -1757,6 +1758,7 @@
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
       const cleanupOrphansButton = document.getElementById('cleanupOrphansButton');
+      const archiveCandidatesButton = document.getElementById('archiveCandidatesButton');
       const sessionDetail = document.getElementById('sessionDetail');
       const agentTabButton = document.getElementById('agentTabButton');
       const officeTabButton = document.getElementById('officeTabButton');
@@ -1788,7 +1790,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-06-2258';
+      const BUILD_ID = '2026-05-06-2312';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1946,7 +1948,8 @@
         const used = Number(agent.contextTokens || 0);
         const max = Number(agent.contextMaxTokens || 200000);
         const cls = left <= 10 ? 'low' : (left <= 25 ? 'warn' : '');
-        return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}</span></div>`;
+        const advice = left <= 10 ? ' · 위험' : (left <= 20 ? ' · 새 세션 권장' : '');
+        return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%${advice}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}${advice}</span></div>`;
       }
 
       function renderTags(agent) {
@@ -2690,6 +2693,25 @@
           await loadAgents();
         } catch (error) {
           appendSystemMessage(`고아 중단 실패: ${error}`);
+        }
+      });
+
+      archiveCandidatesButton.addEventListener('click', async () => {
+        if (!selectedAgent) return;
+        const agent = latestAgents.find((item) => item.id === selectedAgent);
+        const count = agent && agent.subagents ? Number(agent.subagents.archiveCandidates || 0) : 0;
+        if (!count) {
+          appendSystemMessage('보관 후보가 없습니다.');
+          return;
+        }
+        if (!window.confirm(`보관 후보 세션 ${count}개를 archive 할까요? 삭제는 아니며 백업/아카이브 파일을 남깁니다.`)) return;
+        appendSystemMessage(`보관 후보 ${count}개 archive 중입니다...`);
+        try {
+          const payload = await postAgentAction('/api/agent/archive-candidates', archiveCandidatesButton, '보관 중', 'archive 실패');
+          if (payload) appendSystemMessage(`archive 완료: 후보 ${payload.candidates || 0}개 · 보관 ${payload.archived || 0}개`);
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`archive 실패: ${error}`);
         }
       });
 

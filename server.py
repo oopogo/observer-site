@@ -27,6 +27,8 @@ HISTORY_PATH = DATA_DIR / "chat-history.json"
 SETTINGS_PATH = DATA_DIR / "agent-settings.json"
 READ_STATE_PATH = DATA_DIR / "chat-read-state.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
+CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
+SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -223,6 +225,38 @@ def load_history() -> dict[str, list[dict[str, Any]]]:
 def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+
+
+def load_cleanup_state() -> dict[str, Any]:
+    try:
+        data = json.loads(CLEANUP_STATE_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_cleanup_state(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    CLEANUP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cleanup_state_set(agent_id: str, key: str, kind: str) -> None:
+    data = load_cleanup_state()
+    bucket = data.setdefault(agent_id, {})
+    bucket[key] = {"kind": kind, "ts": int(time.time() * 1000)}
+    save_cleanup_state(data)
+    invalidate_agents_cache()
+
+
+def cleanup_state_kind(agent_id: str, key: str) -> str | None:
+    data = load_cleanup_state().get(agent_id, {})
+    item = data.get(key) if isinstance(data, dict) else None
+    return str(item.get("kind")) if isinstance(item, dict) else None
+
+
+def agent_session_store_path(agent_id: str) -> Path:
+    safe = ''.join(ch for ch in agent_id if ch.isalnum() or ch in {'-', '_'})
+    return Path("/home/oopogo/.openclaw/agents") / safe / "sessions" / "sessions.json"
 
 
 def append_history(agent_id: str, role: str, content: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -836,6 +870,7 @@ def abort_orphan_subagent_sessions(agent_id: str) -> dict[str, Any]:
             continue
         try:
             result = gateway_call("sessions.abort", {"key": key}, timeout=18)
+            cleanup_state_set(agent_id, key, "resolved-orphan")
             results.append({"key": key, "ok": True, "result": result})
         except Exception as exc:
             results.append({"key": key, "ok": False, "error": str(exc)})
@@ -847,6 +882,55 @@ def abort_orphan_subagent_sessions(agent_id: str) -> dict[str, Any]:
     )
     invalidate_agents_cache()
     return {"ok": True, "agentId": agent_id, "candidates": len(candidates), "aborted": sum(1 for r in results if r.get("ok")), "results": results}
+
+
+def archive_subagent_candidate_sessions(agent_id: str) -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    now = int(time.time() * 1000)
+    sessions_data = gateway_call("sessions.list", timeout=18)
+    sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
+    if not isinstance(sessions, list):
+        sessions = []
+    keys = []
+    for session in sessions:
+        key = str(session.get("key") or "")
+        if ":subagent:" not in key and not session.get("spawnedBy"):
+            continue
+        if subagent_owner_id(session) != agent_id:
+            continue
+        if cleanup_state_kind(agent_id, key) == "archived":
+            continue
+        status = str(session.get("status") or "")
+        normalized = normalize_status(status)
+        if normalized == "working":
+            continue
+        updated = to_epoch_ms(session.get("updatedAt") or session.get("startedAt"))
+        stale_ms = max(0, now - updated) if updated else ARCHIVE_CANDIDATE_MS + 1
+        if stale_ms >= ARCHIVE_CANDIDATE_MS:
+            keys.append(key)
+    store_path = agent_session_store_path(agent_id)
+    if not store_path.exists():
+        raise RuntimeError(f"session store not found: {store_path}")
+    store = json.loads(store_path.read_text())
+    if not isinstance(store, dict):
+        raise RuntimeError("session store format is not an object")
+    archive_entries = {key: store[key] for key in keys if key in store}
+    if not archive_entries:
+        return {"ok": True, "agentId": agent_id, "candidates": len(keys), "archived": 0, "archivePath": None}
+    SESSION_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    archive_path = SESSION_ARCHIVE_DIR / f"{stamp}-{agent_id}-sessions.json"
+    backup_path = store_path.with_suffix(f".json.bak-{stamp}")
+    backup_path.write_text(json.dumps(store, ensure_ascii=False, indent=2))
+    archive_path.write_text(json.dumps({"agentId": agent_id, "archivedAt": int(time.time() * 1000), "entries": archive_entries}, ensure_ascii=False, indent=2))
+    for key in archive_entries:
+        store.pop(key, None)
+        cleanup_state_set(agent_id, key, "archived")
+    store_path.write_text(json.dumps(store, ensure_ascii=False, indent=2))
+    append_history(agent_id, "system", f"보관 후보 세션 archive 완료: {len(archive_entries)}개", {"status": "archive-candidates", "hidden": True, "archivePath": str(archive_path), "backupPath": str(backup_path)})
+    invalidate_agents_cache()
+    return {"ok": True, "agentId": agent_id, "candidates": len(keys), "archived": len(archive_entries), "archivePath": str(archive_path), "backupPath": str(backup_path)}
 
 
 def gateway_call(method: str, params: dict[str, Any] | None = None, timeout: int = 8) -> Any:
@@ -950,7 +1034,10 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
             preview = json.dumps(preview, ensure_ascii=False)[:500]
         tokens = int(float(session.get("totalTokens") or 0) or 0)
         cleanup_kind = None
-        if state == "stale" and stale_seconds * 1000 >= ORPHAN_RUNNING_CANDIDATE_MS:
+        resolved_kind = cleanup_state_kind(agent_id, key)
+        if resolved_kind in {"resolved-orphan", "archived"}:
+            cleanup_kind = None
+        elif state == "stale" and stale_seconds * 1000 >= ORPHAN_RUNNING_CANDIDATE_MS:
             cleanup_kind = "orphan-running"
         elif state in {"done", "failed"} and stale_seconds * 1000 >= ARCHIVE_CANDIDATE_MS:
             cleanup_kind = "archive-candidate"
@@ -1401,6 +1488,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/cleanup-orphans":
                 result = abort_orphan_subagent_sessions(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/archive-candidates":
+                result = archive_subagent_candidate_sessions(agent_id)
                 self.json_response(result)
                 return
             if path == "/api/agent/settings":
