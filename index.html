@@ -497,8 +497,8 @@
       }
 
       .battery-fill {
+        display: block;
         height: 100%;
-        width: calc(var(--context-left, 0) * 1%);
         border-radius: 3px;
         background: linear-gradient(90deg, #ff7e7e, #ffd878 42%, #62e69b 75%, #69d7ff);
         box-shadow: 0 0 14px rgba(105,215,255,.24);
@@ -1784,7 +1784,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-06-2152';
+      const BUILD_ID = '2026-05-06-2205';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1931,7 +1931,7 @@
         const used = Number(agent.contextTokens || 0);
         const max = Number(agent.contextMaxTokens || 200000);
         const cls = left <= 10 ? 'low' : (left <= 25 ? 'warn' : '');
-        return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="--context-left:${left}"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}</span></div>`;
+        return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}</span></div>`;
       }
 
       function renderTags(agent) {
