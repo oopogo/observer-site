@@ -390,7 +390,13 @@ def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
             return False
         return not is_internal_status_text(content)
 
-    visible = [item for item in messages if is_visible(item)]
+    visible = []
+    for item in messages:
+        if not is_visible(item):
+            continue
+        if "[관제 보고 규칙]" in str(item.get("content") or ""):
+            item = {**item, "content": strip_internal_report_contract(str(item.get("content") or ""))}
+        visible.append(item)
     return {"ok": True, "agentId": agent_id, "messages": visible[-80:]}
 
 def extract_response_text(payload: Any) -> str:
@@ -624,6 +630,8 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             text = extract_response_text(payload)
         if not text or text in {"{}", "[]"} or is_internal_status_text(text):
             text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=120)
+        if text:
+            text = strip_internal_report_contract(text)
         if not text or is_internal_status_text(text):
             text = "실패: 내부 실행 상태만 받았고 최종 답변을 아직 찾지 못했습니다. 잠시 후 다시 확인해 주세요."
         replace_history_message(
@@ -759,14 +767,14 @@ def get_agent_session_detail(agent_id: str) -> dict[str, Any]:
             content = msg.get("content") or msg.get("text") or msg.get("message") or ""
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)[:2000]
-            compact_messages.append({"role": role, "content": content[:2000], "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt")})
+            compact_messages.append({"role": role, "content": strip_internal_report_contract(content)[:2000], "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt")})
     else:
         for msg in public_history(agent_id, mark_read=False).get("messages", [])[-20:]:
             if not isinstance(msg, dict):
                 continue
             compact_messages.append({
                 "role": msg.get("role") or "message",
-                "content": str(msg.get("content") or "")[:2000],
+                "content": strip_internal_report_contract(str(msg.get("content") or ""))[:2000],
                 "ts": msg.get("ts") or msg.get("timestamp") or msg.get("createdAt"),
             })
 

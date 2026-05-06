@@ -1740,7 +1740,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-06-1012';
+      const BUILD_ID = '2026-05-06-1418';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1798,6 +1798,13 @@
         return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
       }
 
+      function stripInternalReportContract(text) {
+        const value = String(text || '');
+        const marker = '[관제 보고 규칙]';
+        const index = value.indexOf(marker);
+        return index >= 0 ? value.slice(0, index).trimEnd() : value;
+      }
+
       function linkifyText(text) {
         const value = String(text || '');
         const urlRegex = /(?:https?:\/\/|www\.)[^\s<>()\[\]{}]+/g;
@@ -1821,7 +1828,7 @@
       function messageHtml(msg) {
         const timeText = formatMessageTimestamp(msg.ts);
         const timeHtml = timeText ? `<span class="message-time">${escapeHtml(timeText)}</span>` : '';
-        return `${linkifyText(msg.content || '')}${timeHtml}`;
+        return `${linkifyText(stripInternalReportContract(msg.content || ''))}${timeHtml}`;
       }
 
       function renderMessages(messages, options = {}) {
@@ -2460,7 +2467,7 @@
         const messages = payload.messages || [];
         if (!messages.length) lines.push('- 메시지 없음');
         for (const msg of messages.slice(-8)) {
-          lines.push(`- ${msg.role || 'message'}: ${String(msg.content || '').slice(0, 500)}`);
+          lines.push(`- ${msg.role || 'message'}: ${stripInternalReportContract(String(msg.content || '')).slice(0, 500)}`);
         }
         return lines.join('\n');
       }
