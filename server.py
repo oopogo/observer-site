@@ -492,6 +492,9 @@ def is_internal_status_text(text: str) -> bool:
         "응답 대기가 만료",
         "응답 도착",
         "전달됨.",
+        "Agent failed before reply",
+        "All models failed",
+        "Logs: openclaw logs",
     )
     return stripped.startswith(bad_prefixes)
 
