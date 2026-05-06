@@ -51,7 +51,7 @@ NUDGE_INTERVAL_SECONDS = 900
 ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
 SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
 ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
-DEFAULT_CONTEXT_MAX_TOKENS = 200_000
+DEFAULT_CONTEXT_MAX_TOKENS = 1_000_000
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 
@@ -1218,7 +1218,7 @@ def summarize_agents() -> dict[str, Any]:
 
         latest_updated = current_updated
         context_tokens = int(float(current.get("totalTokens") or 0) or 0) if current else 0
-        context_max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
+        context_max_tokens = int(float(current.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS) if current else DEFAULT_CONTEXT_MAX_TOKENS
         context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
         status_text = "응답 가능"
         if state == "working":
