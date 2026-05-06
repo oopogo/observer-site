@@ -70,6 +70,12 @@ def cache_set(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def invalidate_agents_cache() -> None:
+    global AGENTS_CACHE
+    with CACHE_LOCK:
+        AGENTS_CACHE = None
+
+
 def cache_is_fresh(payload: dict[str, Any] | None) -> bool:
     if not payload:
         return False
@@ -150,6 +156,7 @@ def mark_agent_read(agent_id: str) -> None:
     state = load_read_state()
     state[agent_id] = int(time.time() * 1000)
     save_read_state(state)
+    invalidate_agents_cache()
 
 
 def unread_count(agent_id: str) -> int:
@@ -222,10 +229,12 @@ def append_history(agent_id: str, role: str, content: str, meta: dict[str, Any] 
     entries.append(item)
     del entries[:-80]
     save_history(history)
+    invalidate_agents_cache()
     return item
 
 
 def replace_history_message(agent_id: str, request_id: str, role: str, content: str, meta: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    content = strip_internal_report_contract(content)
     history = load_history()
     entries = history.setdefault(agent_id, [])
     for index, item in enumerate(entries):
@@ -233,6 +242,7 @@ def replace_history_message(agent_id: str, request_id: str, role: str, content: 
             updated = {**item, "content": content, "ts": int(time.time() * 1000), **(meta or {})}
             entries[index] = updated
             save_history(history)
+            invalidate_agents_cache()
             return updated
     return None
 
@@ -478,6 +488,15 @@ def is_internal_status_text(text: str) -> bool:
         "전달됨.",
     )
     return stripped.startswith(bad_prefixes)
+
+
+def strip_internal_report_contract(text: str) -> str:
+    value = str(text or "")
+    marker = "[관제 보고 규칙]"
+    index = value.find(marker)
+    if index < 0:
+        return value
+    return value[:index].rstrip()
 
 
 def is_progress_only_report_text(text: str) -> bool:
@@ -964,6 +983,27 @@ def expire_stale_pending_assignments(now: int | None = None) -> int:
     return changed
 
 
+
+def sanitize_internal_report_contract_messages() -> int:
+    history = load_history()
+    changed = 0
+    for entries in history.values():
+        for item in entries:
+            content = str(item.get("content") or "")
+            if "[관제 보고 규칙]" not in content:
+                continue
+            cleaned = strip_internal_report_contract(content)
+            if cleaned:
+                item["content"] = cleaned
+            else:
+                item["hidden"] = True
+                item["status"] = "internal-status"
+            changed += 1
+    if changed:
+        save_history(history)
+        invalidate_agents_cache()
+    return changed
+
 def sanitize_internal_done_messages() -> int:
     history = load_history()
     changed = 0
@@ -980,6 +1020,7 @@ def sanitize_internal_done_messages() -> int:
 
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
+    sanitize_internal_report_contract_messages()
     sanitize_internal_done_messages()
     expire_stale_pending_assignments(now)
     sessions_data = gateway_call("sessions.list", timeout=18)
