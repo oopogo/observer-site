@@ -480,6 +480,26 @@ def is_internal_status_text(text: str) -> bool:
     return stripped.startswith(bad_prefixes)
 
 
+def is_progress_only_report_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or is_internal_status_text(value):
+        return False
+    completion_markers = (
+        "완료했습니다", "처리했습니다", "끝났습니다", "마쳤습니다", "완료됐습니다",
+        "작업 완료", "완료 상태", "검증", "커밋", "push", "업로드 완료",
+        "실패:", "실패했습니다", "중단했습니다", "못했습니다",
+    )
+    if any(marker in value for marker in completion_markers):
+        return False
+    progress_markers = (
+        "시작했습니다", "시작합니다", "진행하겠습니다", "진행합니다", "들어갑니다",
+        "확인하겠습니다", "고치겠습니다", "수정하겠습니다", "보겠습니다",
+        "완료되면", "끝나면", "보고하겠습니다", "기다려", "대기해",
+        "바로", "먼저", "이제", "작업 방향", "계획",
+    )
+    return any(marker in value for marker in progress_markers)
+
+
 def validate_chat_message(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> None:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
@@ -616,7 +636,14 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
     append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
-    worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_message, request_id), daemon=True)
+    report_contract = (
+        "\n\n[관제 보고 규칙] "
+        "작업 요청이면 시작보고와 완료보고를 구분하세요. "
+        "'시작합니다/진행하겠습니다/완료되면 보고하겠습니다'는 완료가 아닙니다. "
+        "최종 산출물, 검증 결과, 실패/차단 사유를 사용자에게 보고해야 일이 완료됩니다."
+    )
+    outbound_for_worker = f"{outbound_message}{report_contract}"
+    worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_for_worker, request_id), daemon=True)
     worker.start()
     history_payload = public_history(agent_id, mark_read=False)
     return {"ok": True, "accepted": True, "pending": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
@@ -877,7 +904,8 @@ def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
             continue
         if item.get("status") not in {"done", "error"}:
             continue
-        if is_internal_status_text(str(item.get("content") or "")):
+        content = str(item.get("content") or "")
+        if is_internal_status_text(content) or is_progress_only_report_text(content):
             continue
         latest = max(latest, int(item.get("ts") or 0))
     return latest
