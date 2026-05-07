@@ -1807,7 +1807,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1405';
+      const BUILD_ID = '2026-05-07-1548';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1966,7 +1966,7 @@
         const cls = left <= 10 ? 'low' : (left <= 25 ? 'warn' : '');
         const usedPct = 100 - left;
         const advice = usedPct >= 95 ? ' · 자동 전환 예정' : (usedPct >= 90 ? ' · 새 세션 권장' : (usedPct >= 80 ? ' · 주의' : ''));
-        return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%${advice}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}${advice}</span></div>`;
+        return `<div class="context-battery ${cls}" title="관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%${advice}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}${advice}</span></div>`;
       }
 
       function renderTags(agent) {

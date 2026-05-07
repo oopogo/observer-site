@@ -1308,6 +1308,9 @@ def summarize_agents() -> dict[str, Any]:
                 stale_active.append(session)
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
+        chat_key = observer_chat_session_key(base["id"])
+        chat_session = next((s for s in agent_sessions_all if str(s.get("key") or "") == chat_key), None)
+        context_source = chat_session or current
 
         report_pending_ms = latest_report_pending_ms(base["id"])
         pending_assignment_ms = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
@@ -1328,10 +1331,10 @@ def summarize_agents() -> dict[str, Any]:
             state = "warning"
 
         latest_updated = current_updated
-        context_tokens = int(float(current.get("totalTokens") or 0) or 0) if current else 0
-        context_max_tokens = int(float(current.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS) if current else DEFAULT_CONTEXT_MAX_TOKENS
-        current_model = str(current.get("model") or "") if current else ""
-        current_provider = str(current.get("modelProvider") or "") if current else ""
+        context_tokens = int(float(context_source.get("totalTokens") or 0) or 0) if context_source else 0
+        context_max_tokens = int(float(context_source.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS) if context_source else DEFAULT_CONTEXT_MAX_TOKENS
+        current_model = str(context_source.get("model") or "") if context_source else ""
+        current_provider = str(context_source.get("modelProvider") or "") if context_source else ""
         if current_model.startswith("gpt-5") or current_provider == "openai-codex":
             context_max_tokens = max(context_max_tokens, DEFAULT_CONTEXT_MAX_TOKENS)
         context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
@@ -1383,6 +1386,7 @@ def summarize_agents() -> dict[str, Any]:
             "latestPreview": current.get("lastMessagePreview") if current else None,
             "contextTokens": context_tokens,
             "contextMaxTokens": context_max_tokens,
+            "contextSessionKey": context_source.get("key") if context_source else None,
             "contextRemainingPercent": context_remaining_percent,
             "subagents": subagent_summary,
             "unreadCount": unread_count(base["id"]),
