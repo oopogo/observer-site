@@ -1603,6 +1603,7 @@
       <section class="summary" id="statusSummary" aria-label="상태별 요약">
         <div class="metric"><strong id="countIdle">-</strong><span>대기</span></div>
         <div class="metric"><strong id="countAssigned">-</strong><span>응답 대기</span></div>
+        <div class="metric"><strong id="countReporting">-</strong><span>보고 대기</span></div>
         <div class="metric"><strong id="countWorking">-</strong><span>작업</span></div>
         <div class="metric"><strong id="countLagging">-</strong><span>지연</span></div>
         <div class="metric"><strong id="countWarning">-</strong><span>점검 필요</span></div>
@@ -1748,6 +1749,7 @@
       const gatewayLatency = document.getElementById('gatewayLatency');
       const countIdle = document.getElementById('countIdle');
       const countAssigned = document.getElementById('countAssigned');
+      const countReporting = document.getElementById('countReporting');
       const countWorking = document.getElementById('countWorking');
       const countLagging = document.getElementById('countLagging');
       const countWarning = document.getElementById('countWarning');
@@ -1792,7 +1794,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-0958';
+      const BUILD_ID = '2026-05-07-1004';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2355,17 +2357,19 @@
         const agents = payload.agents || [];
         latestAgents = agents;
         const idleCount = agents.filter((a) => a.state === 'idle').length;
-        const assignedCount = agents.filter((a) => a.state === 'assigned' || a.state === 'reporting').length;
+        const assignedCount = agents.filter((a) => a.state === 'assigned').length;
+        const reportingCount = agents.filter((a) => a.state === 'reporting').length;
         const workingCount = agents.filter((a) => a.state === 'working' && !a.isLagging).length;
         const laggingCount = agents.filter((a) => a.isLagging).length;
         const warningCount = agents.filter((a) => a.state === 'warning').length;
         countIdle.textContent = idleCount;
         countAssigned.textContent = assignedCount;
+        countReporting.textContent = reportingCount;
         countWorking.textContent = workingCount;
         countLagging.textContent = laggingCount;
         countWarning.textContent = warningCount;
         idleLabel.textContent = `${idleCount} 응답 가능`;
-        workingLabel.textContent = `${assignedCount + workingCount + laggingCount + warningCount} 응답대기/보고대기/작업/점검`;
+        workingLabel.textContent = `${assignedCount + reportingCount + workingCount + laggingCount + warningCount} 응답대기/보고대기/작업/점검`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
