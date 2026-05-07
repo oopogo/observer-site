@@ -1838,7 +1838,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-2305';
+      const BUILD_ID = '2026-05-07-2322';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1849,9 +1849,15 @@
         const value = String(text || '').trim();
         if (!value) return false;
         if (value.startsWith('{')) {
+          if (value.includes('"role": "assistant"') && (value.includes('"type": "thinking"') || value.includes('"type": "toolCall"') || value.includes('"type": "toolResult"'))) return true;
           try {
             const payload = JSON.parse(value);
             if (payload && typeof payload.runId === 'string' && ['started', 'running', 'queued', 'pending'].includes(String(payload.status || '').toLowerCase())) return true;
+            if (payload && payload.role === 'assistant' && Array.isArray(payload.content)) {
+              const hasInternalPart = payload.content.some((item) => item && ['thinking', 'toolCall', 'toolResult'].includes(String(item.type || '')));
+              const hasTextPart = payload.content.some((item) => item && item.type === 'text' && String(item.text || item.value || '').trim());
+              if (hasInternalPart || !hasTextPart) return true;
+            }
           } catch (_) {}
         }
         return value.startsWith('백그라운드 실행을 시작') || value.startsWith('전달됨.') || value.startsWith('응답 도착') || value.startsWith('응답 대기가 만료') || value.startsWith('No response from OpenClaw') || value.startsWith('Agent failed before reply') || value.startsWith('All models failed') || value.startsWith('Logs: openclaw logs');

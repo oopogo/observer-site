@@ -517,6 +517,7 @@ def sync_gateway_session_history(agent_id: str) -> None:
 
 
 def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
+    sanitize_internal_done_messages()
     # 중요: 채팅창은 로컬 브리지 히스토리만 즉시 반환한다.
     # Gateway sessions.get 동기화는 느리고, observer처럼 작업 세션과 관제 채팅
     # 세션키가 겹칠 때 도구 로그/다른 흐름을 채팅창에 섞는다.
@@ -626,6 +627,8 @@ def is_internal_status_text(text: str) -> bool:
     if not stripped:
         return True
     if stripped.startswith('{'):
+        if '"role": "assistant"' in stripped and ('"type": "thinking"' in stripped or '"type": "toolCall"' in stripped or '"type": "toolResult"' in stripped):
+            return True
         try:
             payload = json.loads(stripped)
             if is_transport_status_payload(payload):
