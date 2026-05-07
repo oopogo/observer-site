@@ -805,14 +805,28 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         )
 
 
+def cached_sessions_if_fresh() -> list[dict[str, Any]]:
+    cached = cache_get("sessions")
+    if not cache_is_fresh(cached):
+        return []
+    sessions = cached.get("sessions") if isinstance(cached, dict) else []
+    return sessions if isinstance(sessions, list) else []
+
+
+def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
+    # 채팅 UI 응답성을 위해 전송 요청 경로에서는 gateway 조회를 하지 않는다.
+    # 신선한 세션 캐시가 있을 때만 롤오버 판단을 하고, 없으면 현재/기본 채팅키로
+    # 즉시 pending을 반환한 뒤 백그라운드 sessions.send가 실제 전송을 처리한다.
+    sessions = cached_sessions_if_fresh()
+    if sessions:
+        return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
+    return desired_observer_chat_session_key(agent_id), None
+
+
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     validate_chat_message(agent_id, message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    try:
-        sessions = get_sessions_cached(timeout=12)
-    except Exception:
-        sessions = []
-    session_key, handoff_summary = maybe_rollover_chat_session_from_sessions(agent_id, sessions)
+    session_key, handoff_summary = fast_chat_session_for_send(agent_id)
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
     outbound_message = build_message_with_attachments(message, saved_attachments)
