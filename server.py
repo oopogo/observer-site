@@ -43,6 +43,7 @@ MAX_CHAT_IMAGE_BYTES = 8_000_000
 MAX_CHAT_IMAGES = 6
 AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
+SESSIONS_CACHE: dict[str, Any] | None = None
 CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
@@ -61,7 +62,7 @@ CONTEXT_ROLLOVER_RATIO = 0.95
 
 def cache_get(name: str) -> dict[str, Any] | None:
     with CACHE_LOCK:
-        cached = AGENTS_CACHE if name == "agents" else GATEWAY_CACHE
+        cached = AGENTS_CACHE if name == "agents" else (GATEWAY_CACHE if name == "gateway" else SESSIONS_CACHE)
         if not isinstance(cached, dict):
             return None
         age_ms = int(time.time() * 1000) - int(cached.get("generatedAt") or 0)
@@ -69,12 +70,14 @@ def cache_get(name: str) -> dict[str, Any] | None:
 
 
 def cache_set(name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    global AGENTS_CACHE, GATEWAY_CACHE
+    global AGENTS_CACHE, GATEWAY_CACHE, SESSIONS_CACHE
     with CACHE_LOCK:
         if name == "agents":
             AGENTS_CACHE = payload
-        else:
+        elif name == "gateway":
             GATEWAY_CACHE = payload
+        else:
+            SESSIONS_CACHE = payload
     return payload
 
 
@@ -82,6 +85,19 @@ def invalidate_agents_cache() -> None:
     global AGENTS_CACHE
     with CACHE_LOCK:
         AGENTS_CACHE = None
+
+
+def get_sessions_cached(timeout: int = 12) -> list[dict[str, Any]]:
+    cached = cache_get("sessions")
+    if cache_is_fresh(cached):
+        sessions = cached.get("sessions") if isinstance(cached, dict) else []
+        return sessions if isinstance(sessions, list) else []
+    payload = gateway_call("sessions.list", {"limit": 120}, timeout=timeout)
+    sessions = payload.get("sessions") if isinstance(payload, dict) else []
+    if not isinstance(sessions, list):
+        sessions = []
+    cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions})
+    return sessions
 
 
 def cache_is_fresh(payload: dict[str, Any] | None) -> bool:
@@ -400,6 +416,15 @@ def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
     return total / ctx if ctx > 0 else 0.0
 
 
+def current_observer_chat_row_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
+    rows = agent_session_key_rows(agent_id, sessions)
+    key = observer_chat_session_key_from_rows(agent_id, rows)
+    for row in rows:
+        if str(row.get("key") or "") == key:
+            return key, row
+    return key, None
+
+
 def current_observer_chat_row(agent_id: str) -> dict[str, Any] | None:
     key = observer_chat_session_key(agent_id)
     for row in existing_agent_session_keys(agent_id):
@@ -432,15 +457,23 @@ def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> d
     return {"ok": True, "agentId": agent_id, "oldSessionKey": old_key, "sessionKey": new_key, "result": result}
 
 
-def maybe_rollover_chat_session(agent_id: str) -> tuple[str, str | None]:
-    row = current_observer_chat_row(agent_id)
-    key = observer_chat_session_key(agent_id)
+def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, str | None]:
+    key, row = current_observer_chat_row_from_sessions(agent_id, sessions)
     if session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
         return key, None
     summary = compact_local_chat_summary(agent_id)
     result = create_new_observer_chat_session(agent_id, "context-auto")
     handoff = "[이전 관제 대화 요약]\n" + (summary or "요약할 최근 대화가 없습니다.") + "\n\n위 요약을 참고해 새 관제 세션에서 이어서 답하세요."
     return result["sessionKey"], handoff
+
+
+def maybe_rollover_chat_session(agent_id: str) -> tuple[str, str | None]:
+    try:
+        payload = gateway_call("sessions.list", {"limit": 120}, timeout=12)
+        sessions = payload.get("sessions") if isinstance(payload, dict) else []
+    except Exception:
+        sessions = []
+    return maybe_rollover_chat_session_from_sessions(agent_id, sessions if isinstance(sessions, list) else [])
 
 
 def sync_gateway_session_history(agent_id: str) -> None:
@@ -775,7 +808,11 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     validate_chat_message(agent_id, message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    session_key, handoff_summary = maybe_rollover_chat_session(agent_id)
+    try:
+        sessions = get_sessions_cached(timeout=12)
+    except Exception:
+        sessions = []
+    session_key, handoff_summary = maybe_rollover_chat_session_from_sessions(agent_id, sessions)
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
     outbound_message = build_message_with_attachments(message, saved_attachments)
@@ -927,10 +964,7 @@ def abort_orphan_subagent_sessions(agent_id: str) -> dict[str, Any]:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
     now = int(time.time() * 1000)
-    sessions_data = gateway_call("sessions.list", timeout=18)
-    sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
-    if not isinstance(sessions, list):
-        sessions = []
+    sessions = get_sessions_cached(timeout=18)
     candidates = []
     for session in sessions:
         key = str(session.get("key") or "")
@@ -971,10 +1005,7 @@ def archive_subagent_candidate_sessions(agent_id: str) -> dict[str, Any]:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
     now = int(time.time() * 1000)
-    sessions_data = gateway_call("sessions.list", timeout=18)
-    sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
-    if not isinstance(sessions, list):
-        sessions = []
+    sessions = get_sessions_cached(timeout=18)
     keys = []
     for session in sessions:
         key = str(session.get("key") or "")
@@ -1428,10 +1459,7 @@ def summarize_agents() -> dict[str, Any]:
     sanitize_internal_report_contract_messages()
     sanitize_internal_done_messages()
     expire_stale_pending_assignments(now)
-    sessions_data = gateway_call("sessions.list", timeout=18)
-    sessions = sessions_data.get("sessions") if isinstance(sessions_data, dict) else []
-    if not isinstance(sessions, list):
-        sessions = []
+    sessions = get_sessions_cached(timeout=18)
 
     output = []
     for raw_base in AGENTS:
