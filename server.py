@@ -1299,6 +1299,10 @@ def summarize_agents() -> dict[str, Any]:
         latest_updated = current_updated
         context_tokens = int(float(current.get("totalTokens") or 0) or 0) if current else 0
         context_max_tokens = int(float(current.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS) if current else DEFAULT_CONTEXT_MAX_TOKENS
+        current_model = str(current.get("model") or "") if current else ""
+        current_provider = str(current.get("modelProvider") or "") if current else ""
+        if current_model.startswith("gpt-5") or current_provider == "openai-codex":
+            context_max_tokens = max(context_max_tokens, DEFAULT_CONTEXT_MAX_TOKENS)
         context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
         status_text = "응답 가능"
         if state == "working":
