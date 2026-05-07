@@ -30,6 +30,7 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
 SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
+REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -338,14 +339,7 @@ def desired_observer_chat_session_key(agent_id: str) -> str:
     return load_active_chat_sessions().get(agent_id) or base_observer_chat_session_key(agent_id)
 
 
-def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
-    try:
-        payload = gateway_call("sessions.list", {"limit": 120}, timeout=12)
-    except Exception:
-        return []
-    sessions = payload.get("sessions") if isinstance(payload, dict) else []
-    if not isinstance(sessions, list):
-        return []
+def agent_session_key_rows(agent_id: str, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for session in sessions:
         if not isinstance(session, dict):
@@ -360,17 +354,17 @@ def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def observer_chat_session_key(agent_id: str) -> str:
-    """Return an existing sendable session key for the agent.
+def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
+    try:
+        payload = gateway_call("sessions.list", {"limit": 120}, timeout=12)
+    except Exception:
+        return []
+    sessions = payload.get("sessions") if isinstance(payload, dict) else []
+    return agent_session_key_rows(agent_id, sessions if isinstance(sessions, list) else [])
 
-    OpenClaw sessions.send does not create arbitrary keys. A synthetic key like
-    agent:observer:observer-site-chat therefore fails with "session not found"
-    unless such a session already exists. Prefer the dedicated observer-site key
-    when present, otherwise fall back to an existing direct session for the same
-    agent.
-    """
+
+def observer_chat_session_key_from_rows(agent_id: str, rows: list[dict[str, Any]]) -> str:
     desired = desired_observer_chat_session_key(agent_id)
-    rows = existing_agent_session_keys(agent_id)
     keys = [str(row.get("key") or "") for row in rows]
     if desired in keys:
         return desired
@@ -391,6 +385,12 @@ def observer_chat_session_key(agent_id: str) -> str:
             if key.endswith(suffix):
                 return key
     return desired
+
+
+def observer_chat_session_key(agent_id: str) -> str:
+    """Return an existing sendable session key for the agent."""
+    return observer_chat_session_key_from_rows(agent_id, existing_agent_session_keys(agent_id))
+
 
 def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
     if not isinstance(row, dict):
@@ -1330,9 +1330,27 @@ def latest_subagent_done_evidence_ms(agent_id: str, sessions: list[dict[str, Any
     return latest_ts, reason
 
 
-def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, Any]]) -> int:
-    keys = {observer_chat_session_key(agent_id), base_observer_chat_session_key(agent_id)}
+def load_report_ts_cache() -> dict[str, Any]:
+    try:
+        return json.loads(REPORT_TS_CACHE_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_report_ts_cache(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_TS_CACHE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def session_cache_key(session: dict[str, Any]) -> str:
+    return f"{session.get('sessionFile') or ''}|{session.get('updatedAt') or ''}|{session.get('status') or ''}"
+
+
+def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, Any]], chat_key: str | None = None) -> int:
+    keys = {chat_key or observer_chat_session_key_from_rows(agent_id, agent_session_key_rows(agent_id, sessions)), base_observer_chat_session_key(agent_id)}
     latest_ts = 0
+    cache = load_report_ts_cache()
+    changed = False
     for session in sessions:
         if not isinstance(session, dict):
             continue
@@ -1345,8 +1363,19 @@ def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, A
         path = Path(str(session_file))
         if not path.is_file():
             continue
+        cache_key = session_cache_key(session)
+        cached = cache.get(cache_key) if isinstance(cache, dict) else None
+        if isinstance(cached, int):
+            latest_ts = max(latest_ts, cached)
+            continue
+        session_latest = 0
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 1_000_000))
+                chunk = handle.read().decode("utf-8", errors="replace")
+            lines = chunk.splitlines()[-500:]
         except Exception:
             continue
         for line in lines:
@@ -1361,12 +1390,20 @@ def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, A
             if not text or is_internal_status_text(text) or is_progress_only_report_text(text):
                 continue
             ts = to_epoch_ms(row.get("timestamp"))
-            latest_ts = max(latest_ts, ts)
+            session_latest = max(session_latest, ts)
+        cache[cache_key] = session_latest
+        changed = True
+        latest_ts = max(latest_ts, session_latest)
+    if changed:
+        try:
+            save_report_ts_cache(dict(list(cache.items())[-300:]))
+        except Exception:
+            pass
     return latest_ts
 
 
-def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    last_report_ts = max(terminal_reply_ts(load_history().get(agent_id, [])), latest_session_assistant_report_ts(agent_id, sessions))
+def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: str | None = None) -> dict[str, Any] | None:
+    last_report_ts = max(terminal_reply_ts(load_history().get(agent_id, [])), latest_session_assistant_report_ts(agent_id, sessions, chat_key))
     candidates: list[tuple[int, str]] = []
     h_ts, h_reason = latest_history_work_evidence_ms(agent_id)
     if h_ts and h_reason:
@@ -1413,7 +1450,8 @@ def summarize_agents() -> dict[str, Any]:
                 stale_active.append(session)
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
-        chat_key = observer_chat_session_key(base["id"])
+        chat_rows = agent_session_key_rows(base["id"], agent_sessions)
+        chat_key = observer_chat_session_key_from_rows(base["id"], chat_rows)
         chat_session = next((s for s in agent_sessions if str(s.get("key") or "") == chat_key), None)
         context_source = chat_session or current
 
@@ -1472,7 +1510,7 @@ def summarize_agents() -> dict[str, Any]:
                 detail = f"현재 생성 중 아님{stale_note}{recent_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
         subagent_summary = summarize_subagents(base["id"], sessions, now)
-        report_debt = latest_report_debt(base["id"], sessions)
+        report_debt = latest_report_debt(base["id"], agent_sessions, chat_key)
         if report_debt and state == "idle":
             state = "reporting"
             status_text = "보고 누락"
