@@ -634,8 +634,11 @@ def is_internal_status_text(text: str) -> bool:
                 content = payload.get("content")
                 # Reasoning/tool-only assistant payloads are internal artifacts,
                 # not user-visible completion reports.
-                if isinstance(content, list) and not extract_content_text(content):
-                    return True
+                if isinstance(content, list):
+                    has_tool_or_reasoning = any(isinstance(item, dict) and item.get("type") in {"thinking", "toolCall", "toolResult"} for item in content)
+                    text = extract_content_text(content)
+                    if not text or has_tool_or_reasoning:
+                        return True
         except Exception:
             pass
     bad_prefixes = (
@@ -743,6 +746,17 @@ def build_message_with_attachments(message: str, saved: list[dict[str, Any]]) ->
     return "\n".join(lines)
 
 
+def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, Any]] | None = None) -> str | None:
+    if attachments:
+        return None
+    text = str(message or "").strip()
+    normalized = text.replace(" ", "").lower()
+    pings = {"야", "뭐해", "뭐함", "있어?", "듣고있어?", "대답해", "테스트"}
+    if normalized in pings or (normalized.endswith("?") and len(normalized) <= 8):
+        return f"네, 기선님. {agent_name} 듣고 있습니다."
+    return None
+
+
 def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
     """Send a chat turn to the selected OpenClaw agent and write the real final reply.
 
@@ -837,6 +851,11 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
     append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
+    quick_reply = quick_ping_reply(agent["name"], message, saved_attachments)
+    if quick_reply:
+        append_history(agent_id, "assistant", quick_reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "quickAck": True})
+        history_payload = public_history(agent_id, mark_read=False)
+        return {"ok": True, "accepted": True, "pending": False, "quickAck": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
     report_contract = (
         "\n\n[관제 보고 규칙] "
