@@ -1330,8 +1330,43 @@ def latest_subagent_done_evidence_ms(agent_id: str, sessions: list[dict[str, Any
     return latest_ts, reason
 
 
+def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, Any]]) -> int:
+    keys = {observer_chat_session_key(agent_id), base_observer_chat_session_key(agent_id)}
+    latest_ts = 0
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        key = str(session.get("key") or "")
+        if key not in keys:
+            continue
+        session_file = session.get("sessionFile")
+        if not session_file:
+            continue
+        path = Path(str(session_file))
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-500:]
+        except Exception:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            message = row.get("message") if isinstance(row, dict) else None
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            text = extract_content_text(message.get("content"))
+            if not text or is_internal_status_text(text) or is_progress_only_report_text(text):
+                continue
+            ts = to_epoch_ms(row.get("timestamp"))
+            latest_ts = max(latest_ts, ts)
+    return latest_ts
+
+
 def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    last_report_ts = terminal_reply_ts(load_history().get(agent_id, []))
+    last_report_ts = max(terminal_reply_ts(load_history().get(agent_id, [])), latest_session_assistant_report_ts(agent_id, sessions))
     candidates: list[tuple[int, str]] = []
     h_ts, h_reason = latest_history_work_evidence_ms(agent_id)
     if h_ts and h_reason:
