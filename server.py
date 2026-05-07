@@ -1190,6 +1190,31 @@ def latest_unanswered_user_ms(agent_id: str) -> int:
     return latest_user_ts if latest_user_ts > latest_terminal_ts else 0
 
 
+def latest_report_pending_ms(agent_id: str) -> int:
+    entries = load_history().get(agent_id, [])
+    latest_user_ts = 0
+    latest_progress_ts = 0
+    latest_terminal_ts = 0
+    for item in entries:
+        ts = int(item.get("ts") or 0)
+        if item.get("role") == "user":
+            latest_user_ts = max(latest_user_ts, ts)
+    if not latest_user_ts:
+        return 0
+    for item in entries:
+        ts = int(item.get("ts") or 0)
+        if ts <= latest_user_ts or item.get("role") != "assistant" or item.get("status") not in {"done", "error"}:
+            continue
+        content = str(item.get("content") or "")
+        if is_internal_status_text(content):
+            continue
+        if is_progress_only_report_text(content):
+            latest_progress_ts = max(latest_progress_ts, ts)
+        else:
+            latest_terminal_ts = max(latest_terminal_ts, ts)
+    return latest_user_ts if latest_progress_ts and latest_progress_ts > latest_terminal_ts else 0
+
+
 def expire_stale_pending_assignments(now: int | None = None) -> int:
     # Keep genuinely unresolved questions as pending/delayed, but clear pending
     # rows once a later assistant done/error exists. Otherwise finished chats can
@@ -1281,8 +1306,11 @@ def summarize_agents() -> dict[str, Any]:
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
 
+        report_pending_ms = latest_report_pending_ms(base["id"])
         pending_assignment_ms = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
-        state = "working" if recent_active else ("assigned" if pending_assignment_ms else "idle")
+        state = "working" if recent_active else ("reporting" if report_pending_ms else ("assigned" if pending_assignment_ms else "idle"))
+        if report_pending_ms:
+            pending_assignment_ms = report_pending_ms
         current_started = to_epoch_ms(current.get("startedAt") or current.get("updatedAt")) if current else pending_assignment_ms
         current_updated = to_epoch_ms(current.get("updatedAt") or current.get("startedAt")) if current else 0
         age_ms = max(0, now - current_started) if current_started else 0
@@ -1309,6 +1337,8 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "작업 중"
         elif state == "assigned":
             status_text = "응답 대기"
+        elif state == "reporting":
+            status_text = "보고 대기"
         elif state == "warning":
             status_text = "점검 필요"
 
@@ -1317,7 +1347,10 @@ def summarize_agents() -> dict[str, Any]:
             pending_age_s = max(0, (now - pending_assignment_ms) // 1000)
             status_text = "응답 지연" if pending_age_s * 1000 > ASSIGNED_MAX_AGE_MS else "응답 대기"
             detail = f"{status_text} · 아직 최종 답변 없음 · 요청 {pending_age_s:,}초 전"
-        if current and state != "assigned":
+        if state == "reporting":
+            pending_age_s = max(0, (now - pending_assignment_ms) // 1000)
+            detail = f"보고 대기 · 시작/진행 보고 이후 최종 완료보고 없음 · 요청 {pending_age_s:,}초 전"
+        if current and state not in {"assigned", "reporting"}:
             total_tokens = context_tokens
             model = current.get("model") or "unknown"
             if recent_active:
@@ -1338,6 +1371,7 @@ def summarize_agents() -> dict[str, Any]:
             "staleActiveSessionCount": len(stale_active),
             "isWorkingNow": bool(recent_active),
             "isAssigned": state == "assigned",
+            "isReportPending": state == "reporting",
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
@@ -1362,6 +1396,7 @@ def summarize_agents() -> dict[str, Any]:
             "idle": sum(1 for a in output if a["state"] == "idle"),
             "working": sum(1 for a in output if a["state"] == "working"),
             "assigned": sum(1 for a in output if a["state"] == "assigned"),
+            "reporting": sum(1 for a in output if a["state"] == "reporting"),
             "warning": sum(1 for a in output if a["state"] == "warning"),
         },
     }

@@ -1792,7 +1792,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-0938';
+      const BUILD_ID = '2026-05-07-0958';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1822,7 +1822,7 @@
 
       function stateLabel(state, agent = null) {
         if (state === 'working') return '작업중';
-        if (state === 'assigned') return agent && agent.statusText ? String(agent.statusText) : '응답 대기';
+        if (state === 'assigned' || state === 'reporting') return agent && agent.statusText ? String(agent.statusText) : (state === 'reporting' ? '보고 대기' : '응답 대기');
         if (state === 'warning' || state === 'stale') return '점검';
         if (state === 'failed') return '실패';
         return '응답 가능';
@@ -1915,7 +1915,7 @@
 
       function stateBadgeClass(state, agent = null) {
         if (state === 'working') return 'work';
-        if (state === 'assigned') return 'assigned';
+        if (state === 'assigned' || state === 'reporting') return 'assigned';
         if (state === 'warning') return 'warn';
         return 'idle';
       }
@@ -1956,7 +1956,7 @@
       }
 
       function renderTags(agent) {
-        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.isAssigned ? (agent.statusText || '응답 대기') : '현재 생성 중 아님');
+        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.isReportPending ? '보고 대기' : (agent.isAssigned ? (agent.statusText || '응답 대기') : '현재 생성 중 아님'));
         const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
@@ -2355,7 +2355,7 @@
         const agents = payload.agents || [];
         latestAgents = agents;
         const idleCount = agents.filter((a) => a.state === 'idle').length;
-        const assignedCount = agents.filter((a) => a.state === 'assigned').length;
+        const assignedCount = agents.filter((a) => a.state === 'assigned' || a.state === 'reporting').length;
         const workingCount = agents.filter((a) => a.state === 'working' && !a.isLagging).length;
         const laggingCount = agents.filter((a) => a.isLagging).length;
         const warningCount = agents.filter((a) => a.state === 'warning').length;
@@ -2365,7 +2365,7 @@
         countLagging.textContent = laggingCount;
         countWarning.textContent = warningCount;
         idleLabel.textContent = `${idleCount} 응답 가능`;
-        workingLabel.textContent = `${assignedCount + workingCount + laggingCount + warningCount} 응답대기/작업/지연/점검`;
+        workingLabel.textContent = `${assignedCount + workingCount + laggingCount + warningCount} 응답대기/보고대기/작업/점검`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
