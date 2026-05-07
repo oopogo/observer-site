@@ -148,9 +148,9 @@
 
       .summary {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 12px;
-        margin-bottom: 16px;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 14px;
       }
 
       .metric, .lane {
@@ -161,21 +161,22 @@
       }
 
       .metric {
-        border-radius: 22px;
-        padding: 16px;
+        border-radius: 18px;
+        padding: 12px 13px;
+        min-width: 0;
       }
 
       .metric strong {
         display: block;
-        font-size: 26px;
+        font-size: 22px;
         line-height: 1;
       }
 
       .metric span {
         display: block;
-        margin-top: 7px;
+        margin-top: 6px;
         color: var(--muted);
-        font-size: 13px;
+        font-size: 12px;
       }
 
       .board {
@@ -1794,7 +1795,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1004';
+      const BUILD_ID = '2026-05-07-1008';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
