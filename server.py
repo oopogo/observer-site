@@ -167,7 +167,10 @@ def mark_agent_read(agent_id: str) -> None:
 
 
 def unread_count(agent_id: str) -> int:
-    last_read = load_read_state().get(agent_id, 0)
+    read_state = load_read_state()
+    if agent_id not in read_state:
+        return 0
+    last_read = read_state.get(agent_id, 0)
     count = 0
     for item in load_history().get(agent_id, []):
         ts = int(item.get("ts") or 0)
