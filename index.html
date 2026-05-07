@@ -884,10 +884,12 @@
         gap: 8px;
       }
 
-      .ops-row.danger-row {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+      .ops-row.management-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         margin-top: -2px;
       }
+
+      .management-panel.hidden { display: none; }
 
       .settings-row {
         grid-template-columns: 1fr auto auto;
@@ -1704,11 +1706,14 @@
             <div class="ops-row">
               <button class="recover-button" type="button" id="detailButton">로그</button>
               <button class="recover-button" type="button" id="newSessionButton">새 세션</button>
-              <button class="recover-button" type="button" id="archiveCandidatesButton">보관</button>
+              <button class="recover-button" type="button" id="manageButton">관리</button>
             </div>
-            <div class="ops-row danger-row">
-              <button class="recover-button" type="button" id="cleanupOrphansButton">고아 중단</button>
-              <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
+            <div class="management-panel hidden" id="managementPanel">
+              <div class="ops-row management-row">
+                <button class="recover-button" type="button" id="archiveCandidatesButton">보관</button>
+                <button class="recover-button" type="button" id="cleanupOrphansButton">고아 중단</button>
+                <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
+              </div>
             </div>
             <button class="recover-button compact hidden" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
             <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “로그”를 누르세요.</div>
@@ -1768,6 +1773,8 @@
       const detailButton = document.getElementById('detailButton');
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
+      const manageButton = document.getElementById('manageButton');
+      const managementPanel = document.getElementById('managementPanel');
       const cleanupOrphansButton = document.getElementById('cleanupOrphansButton');
       const archiveCandidatesButton = document.getElementById('archiveCandidatesButton');
       const newSessionButton = document.getElementById('newSessionButton');
@@ -1802,7 +1809,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1357';
+      const BUILD_ID = '2026-05-07-1401';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2658,6 +2665,11 @@
       editClose.addEventListener('click', closeEditor);
       editBackdrop.addEventListener('click', (event) => {
         if (event.target === editBackdrop) closeEditor();
+      });
+
+      manageButton.addEventListener('click', () => {
+        managementPanel.classList.toggle('hidden');
+        manageButton.textContent = managementPanel.classList.contains('hidden') ? '관리' : '관리 닫기';
       });
 
       detailButton.addEventListener('click', async () => {
