@@ -884,6 +884,11 @@
         gap: 8px;
       }
 
+      .ops-row.danger-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: -2px;
+      }
+
       .settings-row {
         grid-template-columns: 1fr auto auto;
       }
@@ -1697,14 +1702,16 @@
               <button class="chat-send" type="submit">보내기</button>
             </div>
             <div class="ops-row">
-              <button class="recover-button" type="button" id="detailButton">마지막 메시지/로그</button>
-              <button class="recover-button" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
+              <button class="recover-button" type="button" id="detailButton">로그</button>
+              <button class="recover-button" type="button" id="newSessionButton">새 세션</button>
+              <button class="recover-button" type="button" id="archiveCandidatesButton">보관</button>
+            </div>
+            <div class="ops-row danger-row">
               <button class="recover-button" type="button" id="cleanupOrphansButton">고아 중단</button>
-              <button class="recover-button" type="button" id="archiveCandidatesButton">보관 후보 archive</button>
-              <button class="recover-button" type="button" id="newSessionButton">새 세션 전환</button>
               <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
             </div>
-            <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “마지막 메시지/로그”를 누르세요.</div>
+            <button class="recover-button compact hidden" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
+            <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “로그”를 누르세요.</div>
             <div class="chat-note">Cloudflare Access 보호 아래에서 허용된 OpenClaw 에이전트에게 실제로 전달합니다. 게이트웨이/시스템 재시작 지시는 차단됩니다.</div>
           </form>
         </section>
@@ -1795,7 +1802,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1234';
+      const BUILD_ID = '2026-05-07-1357';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
