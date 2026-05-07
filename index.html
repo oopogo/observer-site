@@ -1699,6 +1699,7 @@
               <button class="recover-button" type="button" id="recoverButton" title="실험적 기능입니다. 정상 동작이 불안정하면 사용하지 마세요.">상태 재확인 요청(실험)</button>
               <button class="recover-button" type="button" id="cleanupOrphansButton">고아 중단</button>
               <button class="recover-button" type="button" id="archiveCandidatesButton">보관 후보 archive</button>
+              <button class="recover-button" type="button" id="newSessionButton">새 세션 전환</button>
               <button class="recover-button danger" type="button" id="abortButton">세션 중단</button>
             </div>
             <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “마지막 메시지/로그”를 누르세요.</div>
@@ -1759,6 +1760,7 @@
       const abortButton = document.getElementById('abortButton');
       const cleanupOrphansButton = document.getElementById('cleanupOrphansButton');
       const archiveCandidatesButton = document.getElementById('archiveCandidatesButton');
+      const newSessionButton = document.getElementById('newSessionButton');
       const sessionDetail = document.getElementById('sessionDetail');
       const agentTabButton = document.getElementById('agentTabButton');
       const officeTabButton = document.getElementById('officeTabButton');
@@ -1790,7 +1792,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-06-2312';
+      const BUILD_ID = '2026-05-07-0938';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1948,7 +1950,8 @@
         const used = Number(agent.contextTokens || 0);
         const max = Number(agent.contextMaxTokens || 200000);
         const cls = left <= 10 ? 'low' : (left <= 25 ? 'warn' : '');
-        const advice = left <= 10 ? ' · 위험' : (left <= 20 ? ' · 새 세션 권장' : '');
+        const usedPct = 100 - left;
+        const advice = usedPct >= 95 ? ' · 자동 전환 예정' : (usedPct >= 90 ? ' · 새 세션 권장' : (usedPct >= 80 ? ' · 주의' : ''));
         return `<div class="context-battery ${cls}" title="컨텍스트 사용 ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%${advice}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}${advice}</span></div>`;
       }
 
@@ -2712,6 +2715,19 @@
           await loadAgents();
         } catch (error) {
           appendSystemMessage(`archive 실패: ${error}`);
+        }
+      });
+
+      newSessionButton.addEventListener('click', async () => {
+        if (!selectedAgent) return;
+        if (!window.confirm('현재 관제 채팅을 새 세션으로 전환할까요? 기존 세션은 삭제하지 않습니다.')) return;
+        appendSystemMessage('새 관제 채팅 세션을 만드는 중입니다...');
+        try {
+          const payload = await postAgentAction('/api/agent/new-chat-session', newSessionButton, '전환 중', '새 세션 전환 실패');
+          if (payload) appendSystemMessage(`새 세션 전환 완료: ${payload.sessionKey || '-'}`);
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`새 세션 전환 실패: ${error}`);
         }
       });
 

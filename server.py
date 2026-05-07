@@ -29,6 +29,7 @@ READ_STATE_PATH = DATA_DIR / "chat-read-state.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
 CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
 SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
+ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -54,6 +55,7 @@ ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
 DEFAULT_CONTEXT_MAX_TOKENS = 1_000_000
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
+CONTEXT_ROLLOVER_RATIO = 0.95
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -240,6 +242,26 @@ def save_cleanup_state(data: dict[str, Any]) -> None:
     CLEANUP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def load_active_chat_sessions() -> dict[str, str]:
+    try:
+        data = json.loads(ACTIVE_CHAT_SESSIONS_PATH.read_text())
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_active_chat_sessions(data: dict[str, str]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    ACTIVE_CHAT_SESSIONS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def set_active_chat_session(agent_id: str, key: str) -> None:
+    data = load_active_chat_sessions()
+    data[agent_id] = key
+    save_active_chat_sessions(data)
+    invalidate_agents_cache()
+
+
 def cleanup_state_set(agent_id: str, key: str, kind: str) -> None:
     data = load_cleanup_state()
     bucket = data.setdefault(agent_id, {})
@@ -305,8 +327,12 @@ def extract_session_message_text(message: dict[str, Any]) -> str:
 
 
 
-def desired_observer_chat_session_key(agent_id: str) -> str:
+def base_observer_chat_session_key(agent_id: str) -> str:
     return f"agent:{agent_id}:observer-site-chat"
+
+
+def desired_observer_chat_session_key(agent_id: str) -> str:
+    return load_active_chat_sessions().get(agent_id) or base_observer_chat_session_key(agent_id)
 
 
 def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
@@ -362,6 +388,57 @@ def observer_chat_session_key(agent_id: str) -> str:
             if key.endswith(suffix):
                 return key
     return desired
+
+def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    total = float(row.get("totalTokens") or 0)
+    ctx = float(row.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS or 0)
+    return total / ctx if ctx > 0 else 0.0
+
+
+def current_observer_chat_row(agent_id: str) -> dict[str, Any] | None:
+    key = observer_chat_session_key(agent_id)
+    for row in existing_agent_session_keys(agent_id):
+        if str(row.get("key") or "") == key:
+            return row
+    return None
+
+
+def compact_local_chat_summary(agent_id: str, limit: int = 12) -> str:
+    rows = public_history(agent_id, mark_read=False).get("messages", [])[-limit:]
+    lines = []
+    for item in rows:
+        role = item.get("role") or "message"
+        text = strip_internal_report_contract(str(item.get("content") or "")).replace("\n", " ").strip()
+        if not text:
+            continue
+        lines.append(f"- {role}: {text[:220]}")
+    return "\n".join(lines[-limit:])
+
+
+def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> dict[str, Any]:
+    if agent_id not in {a["id"] for a in AGENTS}:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    old_key = observer_chat_session_key(agent_id)
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    new_key = f"agent:{agent_id}:observer-site-chat:{stamp}"
+    result = gateway_call("sessions.create", {"agentId": agent_id, "key": new_key}, timeout=18)
+    set_active_chat_session(agent_id, new_key)
+    append_history(agent_id, "system", f"관제 채팅 새 세션 전환: {old_key} → {new_key}", {"status": "session-rollover", "oldSessionKey": old_key, "sessionKey": new_key, "reason": reason})
+    return {"ok": True, "agentId": agent_id, "oldSessionKey": old_key, "sessionKey": new_key, "result": result}
+
+
+def maybe_rollover_chat_session(agent_id: str) -> tuple[str, str | None]:
+    row = current_observer_chat_row(agent_id)
+    key = observer_chat_session_key(agent_id)
+    if session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
+        return key, None
+    summary = compact_local_chat_summary(agent_id)
+    result = create_new_observer_chat_session(agent_id, "context-auto")
+    handoff = "[이전 관제 대화 요약]\n" + (summary or "요약할 최근 대화가 없습니다.") + "\n\n위 요약을 참고해 새 관제 세션에서 이어서 답하세요."
+    return result["sessionKey"], handoff
+
 
 def sync_gateway_session_history(agent_id: str) -> None:
     session_key = observer_chat_session_key(agent_id)
@@ -695,10 +772,12 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     validate_chat_message(agent_id, message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    session_key = observer_chat_session_key(agent_id)
+    session_key, handoff_summary = maybe_rollover_chat_session(agent_id)
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
     outbound_message = build_message_with_attachments(message, saved_attachments)
+    if handoff_summary:
+        outbound_message = f"{handoff_summary}\n\n[새 요청]\n{outbound_message}"
     display_message = message.strip() or "이미지 첨부"
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
@@ -1493,6 +1572,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/archive-candidates":
                 result = archive_subagent_candidate_sessions(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/new-chat-session":
+                result = create_new_observer_chat_session(agent_id, "manual")
                 self.json_response(result)
                 return
             if path == "/api/agent/settings":
