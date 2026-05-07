@@ -1807,7 +1807,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1548';
+      const BUILD_ID = '2026-05-07-1810';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2468,6 +2468,30 @@
         agentsPollTimer = window.setTimeout(pollAgentsLoop, nextRefreshMs);
       }
 
+      let overlayHistoryOpen = false;
+
+      function pushOverlayHistory(kind) {
+        if (!window.history || overlayHistoryOpen) return;
+        window.history.pushState({ observerOverlay: kind }, '', window.location.href);
+        overlayHistoryOpen = true;
+      }
+
+      function clearOverlayHistoryFlag() {
+        overlayHistoryOpen = false;
+      }
+
+      function closeTopOverlayFromHistory() {
+        if (backdrop.classList.contains('open')) {
+          closeChat({ fromHistory: true });
+          return true;
+        }
+        if (editBackdrop.classList.contains('open')) {
+          closeEditor({ fromHistory: true });
+          return true;
+        }
+        return false;
+      }
+
       async function loadHistory(agentId, markRead = false) {
         const res = await fetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}${markRead ? '&markRead=1' : ''}`, { cache: 'no-store' });
         const payload = await res.json();
@@ -2507,6 +2531,7 @@
         orb.classList.toggle('work', accent === 'work');
         backdrop.classList.add('open');
         backdrop.setAttribute('aria-hidden', 'false');
+        pushOverlayHistory('chat');
         body.innerHTML = '<div class="message system">대화 기록을 불러오는 중입니다...</div>';
         try {
           const messages = await loadHistory(nextAgent, true);
@@ -2530,13 +2555,19 @@
         setTimeout(() => input.focus(), 50);
       }
 
-      function closeChat() {
+      function closeChat(options = {}) {
         chatRequestSeq += 1;
         backdrop.classList.remove('open');
         backdrop.setAttribute('aria-hidden', 'true');
         if (historyPollTimer) {
           window.clearInterval(historyPollTimer);
           historyPollTimer = null;
+        }
+        if (!options.fromHistory && overlayHistoryOpen && window.history) {
+          clearOverlayHistoryFlag();
+          window.history.back();
+        } else if (options.fromHistory) {
+          clearOverlayHistoryFlag();
         }
       }
 
@@ -2546,6 +2577,9 @@
       });
       window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') closeChat();
+      });
+      window.addEventListener('popstate', () => {
+        closeTopOverlayFromHistory();
       });
 
       function formatSessionDetail(payload) {
@@ -2651,11 +2685,18 @@
         renderEditor(focusAgentId);
         editBackdrop.classList.add('open');
         editBackdrop.setAttribute('aria-hidden', 'false');
+        pushOverlayHistory('editor');
       }
 
-      function closeEditor() {
+      function closeEditor(options = {}) {
         editBackdrop.classList.remove('open');
         editBackdrop.setAttribute('aria-hidden', 'true');
+        if (!options.fromHistory && overlayHistoryOpen && window.history) {
+          clearOverlayHistoryFlag();
+          window.history.back();
+        } else if (options.fromHistory) {
+          clearOverlayHistoryFlag();
+        }
       }
 
       editAgentsButton.addEventListener('click', () => openEditor());
