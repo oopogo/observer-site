@@ -58,6 +58,7 @@ DEFAULT_CONTEXT_MAX_TOKENS = 1_000_000
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
+SILENCE_WARNING_MS = 2 * 60 * 1000
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1199,6 +1200,13 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
 
 
 
+def latest_visible_agent_report_ts(agent_id: str, sessions: list[dict[str, Any]] | None = None, chat_key: str | None = None) -> int:
+    local_ts = terminal_reply_ts(load_history().get(agent_id, []))
+    if sessions is None:
+        return local_ts
+    return max(local_ts, latest_session_assistant_report_ts(agent_id, sessions, chat_key))
+
+
 def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
     latest = 0
     for item in entries:
@@ -1448,7 +1456,7 @@ def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, A
 
 
 def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: str | None = None) -> dict[str, Any] | None:
-    last_report_ts = max(terminal_reply_ts(load_history().get(agent_id, [])), latest_session_assistant_report_ts(agent_id, sessions, chat_key))
+    last_report_ts = latest_visible_agent_report_ts(agent_id, sessions, chat_key)
     candidates: list[tuple[int, str]] = []
     h_ts, h_reason = latest_history_work_evidence_ms(agent_id)
     if h_ts and h_reason:
@@ -1558,6 +1566,13 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "보고 누락"
             debt_age_s = max(0, (now - int(report_debt.get("ts") or now)) // 1000)
             detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
+        last_visible_report_ts = latest_visible_agent_report_ts(base["id"], agent_sessions, chat_key)
+        silence_age_ms = max(0, now - last_visible_report_ts) if last_visible_report_ts else 0
+        needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= SILENCE_WARNING_MS
+        if needs_silence_report:
+            status_text = "무음 경고" if state == "working" else f"{status_text} · 무음"
+            silence_note = f"마지막 가시 보고 {silence_age_ms // 1000:,}초 전"
+            detail = f"무음 경고 · {silence_note} · {detail}"
         agent_payload = {
             **base,
             "state": state,
@@ -1570,6 +1585,9 @@ def summarize_agents() -> dict[str, Any]:
             "isAssigned": state == "assigned",
             "isReportPending": state == "reporting",
             "reportDebt": report_debt,
+            "lastVisibleReportTs": last_visible_report_ts,
+            "silenceAgeMs": silence_age_ms,
+            "needsSilenceReport": needs_silence_report,
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
@@ -1597,6 +1615,7 @@ def summarize_agents() -> dict[str, Any]:
             "assigned": sum(1 for a in output if a["state"] == "assigned"),
             "reporting": sum(1 for a in output if a["state"] == "reporting"),
             "reportMissing": sum(1 for a in output if a.get("reportDebt")),
+            "silenceWarning": sum(1 for a in output if a.get("needsSilenceReport")),
             "warning": sum(1 for a in output if a["state"] == "warning"),
         },
     }

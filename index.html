@@ -1644,6 +1644,7 @@
         <div class="metric"><strong id="countWorking">-</strong><span>작업</span></div>
         <div class="metric"><strong id="countLagging">-</strong><span>지연</span></div>
         <div class="metric"><strong id="countWarning">-</strong><span>점검 필요</span></div>
+        <div class="metric"><strong id="countSilence">-</strong><span>무음 경고</span></div>
       </section>
 
       <section class="board" aria-label="에이전트 상태 보드">
@@ -1794,6 +1795,7 @@
       const countWorking = document.getElementById('countWorking');
       const countLagging = document.getElementById('countLagging');
       const countWarning = document.getElementById('countWarning');
+      const countSilence = document.getElementById('countSilence');
       const idleLabel = document.getElementById('idleLabel');
       const workingLabel = document.getElementById('workingLabel');
       const buildNote = document.getElementById('buildNote');
@@ -1836,7 +1838,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-2059';
+      const BUILD_ID = '2026-05-07-2305';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1993,6 +1995,7 @@
       }
 
       function stateBadgeClass(state, agent = null) {
+        if (agent && agent.needsSilenceReport) return 'warn';
         if (state === 'working') return 'work';
         if (state === 'assigned' || state === 'reporting') return 'assigned';
         if (state === 'warning') return 'warn';
@@ -2035,7 +2038,8 @@
 
       function renderTags(agent) {
         const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 누락' : (agent.isReportPending ? '보고 대기' : (agent.isAssigned ? (agent.statusText || '응답 대기') : '현재 생성 중 아님')));
-        const tags = [agent.role, workingTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 6);
+        const silenceTag = agent.needsSilenceReport ? `무음 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
+        const tags = [agent.role, workingTag, silenceTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 7);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
 
@@ -2438,14 +2442,16 @@
         const workingCount = agents.filter((a) => a.state === 'working' && !a.isLagging).length;
         const laggingCount = agents.filter((a) => a.isLagging).length;
         const warningCount = agents.filter((a) => a.state === 'warning').length;
+        const silenceCount = agents.filter((a) => a.needsSilenceReport).length;
         countIdle.textContent = idleCount;
         countAssigned.textContent = assignedCount;
         countReporting.textContent = reportingCount;
         countWorking.textContent = workingCount;
         countLagging.textContent = laggingCount;
         countWarning.textContent = warningCount;
+        countSilence.textContent = silenceCount;
         idleLabel.textContent = `${idleCount} 응답 가능`;
-        workingLabel.textContent = `${assignedCount + reportingCount + workingCount + laggingCount + warningCount} 응답대기/보고대기/작업/점검`;
+        workingLabel.textContent = `${assignedCount + reportingCount + workingCount + laggingCount + warningCount + silenceCount} 응답대기/보고대기/작업/점검/무음`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
