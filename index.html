@@ -1795,7 +1795,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-1008';
+      const BUILD_ID = '2026-05-07-1234';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1933,13 +1933,12 @@
         const summary = agent.subagents || {};
         if (!summary.total && !summary.cleanupCandidates) return '';
         const dots = (summary.recent || []).slice(0, 12).map((item) => {
-          const cleanup = item.cleanupKind ? ` cleanup` : '';
-          const title = `${item.cleanupKind ? cleanupLabel(item.cleanupKind) + ' · ' : ''}${item.status || ''} · ${item.staleSeconds || 0}초 전`;
-          return `<span class="sub-dot ${escapeHtml(item.state || 'done')}${cleanup}" title="${escapeHtml(title)}"></span>`;
+          const title = `${item.status || ''} · ${item.staleSeconds || 0}초 전`;
+          return `<span class="sub-dot ${escapeHtml(item.state || 'working')}" title="${escapeHtml(title)}"></span>`;
         }).join('');
-        const hidden = summary.hiddenTotal ? ` · 숨김 ${summary.hiddenTotal}` : '';
+        const runningLine = summary.total ? `<div class="subagent-dots">${dots}</div>` : '';
         const cleanup = summary.cleanupCandidates ? ` · 정리 후보 ${summary.cleanupCandidates}(고아 ${summary.orphanRunningCandidates || 0}, 보관 ${summary.archiveCandidates || 0})` : '';
-        return `<div class="subagent-strip"><div class="subagent-dots">${dots}</div><div class="subagent-text">실행 중 ${summary.total || 0} · 완료 ${summary.done || 0} · 실패 ${summary.failed || 0}${cleanup}${hidden}</div></div>`;
+        return `<div class="subagent-strip">${runningLine}<div class="subagent-text">실행 중 ${summary.total || 0} · 완료 ${summary.done || 0} · 실패 ${summary.failed || 0}${cleanup}</div></div>`;
       }
 
       function formatTokenCount(value) {

@@ -1135,7 +1135,7 @@ def summarize_subagents(agent_id: str, sessions: list[dict[str, Any]], now: int)
     subs.sort(key=lambda item: item.get("staleSeconds", 0))
     visible = [item for item in subs if item["state"] == "working"]
     cleanup_candidates = [item for item in subs if item.get("cleanupKind")]
-    recent = (visible + cleanup_candidates)[:12]
+    recent = visible[:12]
     return {
         "total": len(visible),
         "hiddenTotal": max(0, len(subs) - len(recent)),
