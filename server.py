@@ -1309,7 +1309,7 @@ def summarize_agents() -> dict[str, Any]:
         latest = agent_sessions[0] if agent_sessions else None
         current = recent_active[0] if recent_active else latest
         chat_key = observer_chat_session_key(base["id"])
-        chat_session = next((s for s in agent_sessions_all if str(s.get("key") or "") == chat_key), None)
+        chat_session = next((s for s in agent_sessions if str(s.get("key") or "") == chat_key), None)
         context_source = chat_session or current
 
         report_pending_ms = latest_report_pending_ms(base["id"])
