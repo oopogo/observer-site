@@ -1281,6 +1281,76 @@ def sanitize_internal_done_messages() -> int:
         save_history(history)
     return changed
 
+def latest_history_work_evidence_ms(agent_id: str) -> tuple[int, str | None]:
+    evidence_statuses = {"cleanup-orphans", "archive-candidates", "session-rollover"}
+    latest_ts = 0
+    reason = None
+    for item in load_history().get(agent_id, []):
+        if item.get("role") != "system" or item.get("status") not in evidence_statuses:
+            continue
+        ts = int(item.get("ts") or 0)
+        if ts > latest_ts:
+            latest_ts = ts
+            reason = str(item.get("status") or "작업 증거")
+    return latest_ts, reason
+
+
+def latest_observer_git_evidence_ms() -> tuple[int, str | None]:
+    try:
+        result = subprocess.run(["git", "log", "-1", "--format=%ct %s"], cwd=str(ROOT), capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return 0, None
+        raw = result.stdout.strip()
+        if not raw:
+            return 0, None
+        sec, _, subject = raw.partition(" ")
+        return int(float(sec) * 1000), f"git commit: {subject[:80]}"
+    except Exception:
+        return 0, None
+
+
+def latest_subagent_done_evidence_ms(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[int, str | None]:
+    latest_ts = 0
+    reason = None
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        key = str(session.get("key") or "")
+        if ":subagent:" not in key and not session.get("spawnedBy"):
+            continue
+        if subagent_owner_id(session) != agent_id:
+            continue
+        normalized = normalize_status(str(session.get("status") or ""))
+        if normalized == "working":
+            continue
+        ts = to_epoch_ms(session.get("updatedAt") or session.get("endedAt") or session.get("startedAt"))
+        if ts > latest_ts:
+            latest_ts = ts
+            reason = f"subagent {str(session.get('status') or 'done')}: {key[:72]}"
+    return latest_ts, reason
+
+
+def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    last_report_ts = terminal_reply_ts(load_history().get(agent_id, []))
+    candidates: list[tuple[int, str]] = []
+    h_ts, h_reason = latest_history_work_evidence_ms(agent_id)
+    if h_ts and h_reason:
+        candidates.append((h_ts, h_reason))
+    s_ts, s_reason = latest_subagent_done_evidence_ms(agent_id, sessions)
+    if s_ts and s_reason:
+        candidates.append((s_ts, s_reason))
+    if agent_id == "observer":
+        g_ts, g_reason = latest_observer_git_evidence_ms()
+        if g_ts and g_reason:
+            candidates.append((g_ts, g_reason))
+    if not candidates:
+        return None
+    evidence_ts, reason = max(candidates, key=lambda item: item[0])
+    if evidence_ts <= last_report_ts:
+        return None
+    return {"ts": evidence_ts, "reason": reason, "lastReportTs": last_report_ts}
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sanitize_internal_report_contract_messages()
@@ -1367,6 +1437,12 @@ def summarize_agents() -> dict[str, Any]:
                 detail = f"현재 생성 중 아님{stale_note}{recent_note} · 최근 세션: {raw_status} · {model} · {total_tokens:,} tokens"
 
         subagent_summary = summarize_subagents(base["id"], sessions, now)
+        report_debt = latest_report_debt(base["id"], sessions)
+        if report_debt and state == "idle":
+            state = "reporting"
+            status_text = "보고 누락"
+            debt_age_s = max(0, (now - int(report_debt.get("ts") or now)) // 1000)
+            detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
         agent_payload = {
             **base,
             "state": state,
@@ -1378,6 +1454,7 @@ def summarize_agents() -> dict[str, Any]:
             "isWorkingNow": bool(recent_active),
             "isAssigned": state == "assigned",
             "isReportPending": state == "reporting",
+            "reportDebt": report_debt,
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
@@ -1404,6 +1481,7 @@ def summarize_agents() -> dict[str, Any]:
             "working": sum(1 for a in output if a["state"] == "working"),
             "assigned": sum(1 for a in output if a["state"] == "assigned"),
             "reporting": sum(1 for a in output if a["state"] == "reporting"),
+            "reportMissing": sum(1 for a in output if a.get("reportDebt")),
             "warning": sum(1 for a in output if a["state"] == "warning"),
         },
     }
