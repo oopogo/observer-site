@@ -1857,7 +1857,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 7000;
-      const BUILD_ID = '2026-05-08-1634';
+      const BUILD_ID = '2026-05-08-1654';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1918,11 +1918,12 @@
         if (!value) return '';
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return '';
-        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const pad = (num) => String(num).padStart(2, '0');
+        const minutes = pad(date.getMinutes());
         const hours24 = date.getHours();
         const period = hours24 < 12 ? '오전' : '오후';
         const hours12 = hours24 % 12 || 12;
-        return `${period} ${hours12}:${minutes}`;
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${period} ${hours12}:${minutes}`;
       }
 
       function stripInternalReportContract(text) {
