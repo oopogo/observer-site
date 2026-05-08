@@ -973,6 +973,96 @@ def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, 
     return None
 
 
+def format_harness_time(ts: int) -> str:
+    if not ts:
+        return "시간 미상"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000))
+
+
+def compact_report_line(text: str, limit: int = 220) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def recent_visible_reports_for_harness(agent_id: str, before_ms: int, limit: int = 3) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    for item in reversed(load_history().get(agent_id, [])):
+        if item.get("role") != "assistant":
+            continue
+        if item.get("status") not in {"done", "error", "synced"}:
+            continue
+        ts = int(item.get("ts") or 0)
+        if before_ms and ts >= before_ms:
+            continue
+        text = strip_internal_report_contract(str(item.get("content") or ""))
+        if is_internal_status_text(text):
+            continue
+        reports.append({"ts": ts, "text": text, "status": item.get("status")})
+        if len(reports) >= limit:
+            break
+    return reports
+
+
+def latest_work_item_for_harness(agent_id: str) -> dict[str, Any] | None:
+    items = load_work_state().get(agent_id, [])
+    if not isinstance(items, list):
+        return None
+    candidates = [item for item in items if isinstance(item, dict)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0))
+
+
+def chat_session_row_for_harness(agent_id: str, session_key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(agent_session_store_path(agent_id).read_text())
+    except Exception:
+        return None
+    row = data.get(session_key) if isinstance(data, dict) else None
+    return row if isinstance(row, dict) else None
+
+
+def build_harness_status_reply(agent_id: str, agent_name: str, session_key: str, message: str, request_start_ms: int, reason: str = "") -> str:
+    reports = recent_visible_reports_for_harness(agent_id, request_start_ms, limit=3)
+    work = latest_work_item_for_harness(agent_id)
+    active = active_work_item(agent_id)
+    session_row = chat_session_row_for_harness(agent_id, session_key)
+
+    lines = [f"{agent_name} 상태를 관제 하네스가 대신 정리합니다."]
+    if reason:
+        lines.append(f"- 사유: 에이전트가 자연어 답변 대신 내부 상태값만 반환했습니다. ({reason})")
+    if active:
+        started = format_harness_time(int(active.get("startedAt") or 0))
+        lines.append(f"- 현재 등록 작업: {str(active.get('status') or 'working')} · {started}")
+        msg = compact_report_line(str(active.get("message") or ""), 180)
+        if msg:
+            lines.append(f"  - 요청: {msg}")
+    elif work:
+        updated = format_harness_time(int(work.get("updatedAt") or work.get("reportedAt") or work.get("startedAt") or 0))
+        lines.append(f"- 최근 등록 작업: {str(work.get('status') or 'unknown')} · {updated}")
+        msg = compact_report_line(str(work.get("message") or ""), 180)
+        if msg:
+            lines.append(f"  - 요청: {msg}")
+    else:
+        lines.append("- 현재 등록된 작업은 없습니다.")
+
+    if session_row:
+        updated = format_harness_time(to_epoch_ms(session_row.get("updatedAt") or session_row.get("startedAt")))
+        lines.append(f"- 채팅 세션: {session_row.get('status') or 'unknown'} · 마지막 갱신 {updated}")
+
+    if reports:
+        lines.append("- 최근 가시 보고:")
+        for report in reports:
+            lines.append(f"  - {format_harness_time(int(report.get('ts') or 0))}: {compact_report_line(str(report.get('text') or ''))}")
+    else:
+        lines.append("- 최근 가시 완료보고는 찾지 못했습니다.")
+
+    lines.append("- 조치: 내부 무응답 토큰은 숨기고, 이런 상태 질문에는 이 하네스 요약을 사용자에게 보이게 합니다.")
+    return "\n".join(lines)
+
+
 def is_work_request_message(message: str, attachments: list[dict[str, Any]] | None = None) -> bool:
     if is_simple_ping_or_test(message, attachments):
         return False
@@ -1038,7 +1128,8 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         if text:
             text = strip_internal_report_contract(text)
         if not text or is_internal_status_text(text):
-            text = "실패: 내부 실행 상태만 받았고 최종 답변을 아직 찾지 못했습니다. 잠시 후 다시 확인해 주세요."
+            reason = compact_report_line(text or "empty", 120)
+            text = build_harness_status_reply(agent_id, agent_name, session_key, message, request_start_ms, reason)
         replace_history_message(
             agent_id,
             request_id,
@@ -1627,13 +1718,33 @@ def sanitize_internal_report_contract_messages() -> int:
 def sanitize_internal_done_messages() -> int:
     history = load_history()
     changed = 0
-    for entries in history.values():
+    for agent_id, entries in history.items():
+        agent = next((base for base in AGENTS if base["id"] == agent_id), None)
+        agent_name = apply_agent_settings(agent).get("name") if agent else agent_id
         for item in entries:
-            if item.get("role") == "assistant" and item.get("status") == "done" and is_internal_status_text(str(item.get("content") or "")):
+            if item.get("role") != "assistant" or item.get("status") not in {"done", "internal-status"}:
+                continue
+            content = str(item.get("content") or "")
+            if not is_internal_status_text(content):
+                continue
+            request_id = str(item.get("requestId") or "")
+            if content.strip() in {"NO_REPLY", "HEARTBEAT_OK"} and request_id:
+                request_ts = 0
+                for peer in entries:
+                    if peer.get("requestId") == request_id and peer.get("role") == "user":
+                        request_ts = int(peer.get("ts") or 0)
+                        break
+                item["content"] = build_harness_status_reply(agent_id, str(agent_name or agent_id), str(item.get("sessionKey") or observer_chat_session_key(agent_id)), "", request_ts or int(item.get("ts") or 0), content.strip())
+                item["status"] = "done"
+                item["harnessFallback"] = True
+                item["done"] = True
+                item["pending"] = False
+                item.pop("hidden", None)
+            else:
                 item["status"] = "internal-status"
                 item["hidden"] = True
                 item["pending"] = False
-                changed += 1
+            changed += 1
     if changed:
         save_history(history)
     return changed
