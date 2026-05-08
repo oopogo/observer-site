@@ -61,7 +61,7 @@ ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
 SILENCE_WARNING_MS = 2 * 60 * 1000
-SILENCE_AUTO_NUDGE_ENABLED = False
+SILENCE_AUTO_NUDGE_ENABLED = True
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1077,16 +1077,15 @@ def send_silence_nudge(agent_id: str, request_id: str | None = None) -> None:
     if not agent:
         return
     session_key = observer_chat_session_key(agent_id)
-    append_history(agent_id, "system", "시스템: 무음 경고 · 상태보고 요청됨", {"status": "silence-warning", "sessionKey": session_key, "requestId": request_id})
+    nudge_request_id = f"silence-{request_id or str(uuid.uuid4())}"
+    append_history(agent_id, "system", "시스템: 무응답 경고 · 상태보고 요청 중", {"status": "pending", "pending": True, "autoNudge": True, "nudgeKind": "silence", "sessionKey": session_key, "requestId": nudge_request_id})
     message = (
         "상태 보고 요청: 2분 이상 관제 웹에 가시 보고가 없습니다. "
         "현재 상태를 짧게 보고하세요. 작업 중이면 진행률/현재 단계/막힌 점/다음 조치, "
-        "완료했다면 최종 산출물과 검증 결과를 관제 웹 채팅에 보고하세요."
+        "완료했다면 최종 산출물과 검증 결과를 관제 웹 채팅에 보고하세요. "
+        "이 요청에는 반드시 사용자에게 보이는 자연어 답변으로 응답하세요."
     )
-    try:
-        gateway_call("sessions.send", {"key": session_key, "message": message}, timeout=18)
-    except Exception as exc:
-        append_history(agent_id, "system", f"무음 경고 전달 실패: {exc}", {"status": "silence-warning-error", "hidden": True, "sessionKey": session_key})
+    complete_chat_async(agent_id, agent["name"], session_key, message, nudge_request_id)
 
 
 def maybe_auto_nudge(agent: dict[str, Any]) -> None:
