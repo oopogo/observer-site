@@ -64,6 +64,8 @@ ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
 SILENCE_WARNING_MS = 2 * 60 * 1000
+SELF_WORK_WARNING_MS = 2 * 60 * 1000
+SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
 SILENCE_AUTO_NUDGE_ENABLED = True
 
 
@@ -1350,6 +1352,14 @@ def maybe_auto_nudge(agent: dict[str, Any]) -> None:
             nudges[key] = now
             save_nudges(nudges)
             threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
+    self_work = agent.get("selfWork") if isinstance(agent.get("selfWork"), dict) else {}
+    if agent.get("selfWorkReportDue") and self_work:
+        key = f"self-work:{agent_id}:{self_work.get('requestId') or 'active'}"
+        last = int(nudges.get(key, 0) or 0)
+        if now - last >= 60:
+            nudges[key] = now
+            save_nudges(nudges)
+            append_history(agent_id, "system", "시스템: 후타바 직접 작업 보고 기한 초과 · 중간/완료 보고 필요", {"status": "self-work-report-due", "sessionKey": observer_chat_session_key(agent_id), "requestId": str(self_work.get("requestId") or "")})
     if agent.get("needsSilenceReport"):
         if not SILENCE_AUTO_NUDGE_ENABLED:
             return
@@ -2054,11 +2064,20 @@ def summarize_agents() -> dict[str, Any]:
             detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
         active_work = active_work_item(base["id"])
         self_work = active_self_work_item() if base["id"] == "observer" else None
-        if self_work and state == "idle":
-            state = "reporting"
-            status_text = "보고 대기"
+        self_work_age_ms = 0
+        self_work_report_due = False
+        if self_work:
             started = int(self_work.get("startedAt") or now)
-            detail = f"보고 대기 · 후타바 직접 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
+            last_report = int(self_work.get("lastReportAt") or started)
+            self_work_age_ms = max(0, now - started)
+            self_work_report_due = now - last_report >= SELF_WORK_REPORT_INTERVAL_MS
+            if state == "idle":
+                state = "reporting"
+                status_text = "보고 대기"
+                detail = f"보고 대기 · 후타바 직접 작업 최종 보고 없음 · 요청 {self_work_age_ms // 1000:,}초 전"
+            elif self_work_report_due:
+                status_text = f"{status_text} · 보고 기한 초과"
+                detail = f"보고 기한 초과 · 후타바 직접 작업 중간/완료 보고 없음 · 요청 {self_work_age_ms // 1000:,}초 전"
         if active_work and state == "idle":
             state = "reporting"
             status_text = "보고 대기"
@@ -2090,6 +2109,8 @@ def summarize_agents() -> dict[str, Any]:
             "needsSilenceReport": needs_silence_report,
             "activeWork": active_work,
             "selfWork": self_work if base["id"] == "observer" else None,
+            "selfWorkAgeMs": self_work_age_ms if base["id"] == "observer" else 0,
+            "selfWorkReportDue": self_work_report_due if base["id"] == "observer" else False,
             "controlRoute": "observer-web",
             "chatSessionKey": chat_key,
             "isLagging": is_lagging,
