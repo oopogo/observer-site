@@ -61,6 +61,7 @@ ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
 SILENCE_WARNING_MS = 2 * 60 * 1000
+SILENCE_AUTO_NUDGE_ENABLED = False
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1102,6 +1103,8 @@ def maybe_auto_nudge(agent: dict[str, Any]) -> None:
             save_nudges(nudges)
             threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
     if agent.get("needsSilenceReport"):
+        if not SILENCE_AUTO_NUDGE_ENABLED:
+            return
         work = agent.get("activeWork") if isinstance(agent.get("activeWork"), dict) else {}
         request_id = str(work.get("requestId") or "")
         if not request_id and not agent.get("reportDebt"):
