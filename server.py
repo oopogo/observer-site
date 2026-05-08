@@ -825,6 +825,8 @@ def is_internal_status_text(text: str) -> bool:
     stripped = stripped.removeprefix("⚠️").strip()
     if not stripped:
         return True
+    if stripped in {"NO_REPLY", "HEARTBEAT_OK"}:
+        return True
     if stripped.startswith('{'):
         if '"role": "assistant"' in stripped and ('"type": "thinking"' in stripped or '"type": "toolCall"' in stripped or '"type": "toolResult"' in stripped):
             return True
