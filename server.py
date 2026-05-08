@@ -626,8 +626,63 @@ def sync_gateway_session_history(agent_id: str) -> None:
         save_history(history)
 
 
+def sync_latest_session_file_report(agent_id: str) -> int:
+    session_key = observer_chat_session_key(agent_id)
+    sessions_path = agent_session_store_path(agent_id)
+    try:
+        sessions_data = json.loads(sessions_path.read_text())
+    except Exception:
+        return 0
+    row = sessions_data.get(session_key) if isinstance(sessions_data, dict) else None
+    if not isinstance(row, dict) or not row.get("sessionFile"):
+        return 0
+    path = Path(str(row.get("sessionFile")))
+    if not path.is_file():
+        return 0
+    history = load_history()
+    entries = history.setdefault(agent_id, [])
+    latest_user_ts = max((int(item.get("ts") or 0) for item in entries if item.get("role") == "user"), default=0)
+    existing = {(item.get("role"), item.get("content")) for item in entries}
+    appended = 0
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 2_000_000))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()[-500:]
+    except Exception:
+        return 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        message = row.get("message") if isinstance(row, dict) else None
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        ts = to_epoch_ms(row.get("timestamp"))
+        if latest_user_ts and ts and ts < latest_user_ts:
+            continue
+        text = extract_content_text(message.get("content"))
+        if not text or is_internal_status_text(text) or text == "NO_REPLY":
+            continue
+        key = ("assistant", text)
+        if key in existing:
+            continue
+        entries.append({"role": "assistant", "content": text, "ts": ts or int(time.time() * 1000), "status": "synced", "visibleSync": True, "sessionKey": session_key})
+        existing.add(key)
+        appended += 1
+        close_latest_active_work_from_report(agent_id, session_key, text, ts or None)
+    if appended:
+        del entries[:-80]
+        save_history(history)
+        invalidate_agents_cache()
+    return appended
+
+
 def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
     sanitize_internal_done_messages()
+    sync_latest_session_file_report(agent_id)
     # 중요: 채팅창은 로컬 브리지 히스토리만 즉시 반환한다.
     # Gateway sessions.get 동기화는 느리고, observer처럼 작업 세션과 관제 채팅
     # 세션키가 겹칠 때 도구 로그/다른 흐름을 채팅창에 섞는다.
@@ -641,7 +696,7 @@ def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
         status = item.get("status")
         if status in {"stale-pending", "expired"}:
             return False
-        if item.get("role") == "assistant" and status == "synced":
+        if item.get("role") == "assistant" and status == "synced" and not item.get("visibleSync"):
             return False
         content = str(item.get("content") or "")
         if status == "pending":
