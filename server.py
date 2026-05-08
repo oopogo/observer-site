@@ -182,7 +182,13 @@ def save_read_state(data: dict[str, int]) -> None:
 
 def mark_agent_read(agent_id: str) -> None:
     state = load_read_state()
-    state[agent_id] = int(time.time() * 1000)
+    now_ms = int(time.time() * 1000)
+    previous = int(state.get(agent_id, 0) or 0)
+    # Chat panes poll frequently. Avoid rewriting read-state and invalidating
+    # /api/agents cache on every poll; once every 10s is enough for badges.
+    if now_ms - previous < 10_000:
+        return
+    state[agent_id] = now_ms
     save_read_state(state)
     invalidate_agents_cache()
 
