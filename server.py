@@ -49,7 +49,7 @@ CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
 NUDGE_INTERVAL_SECONDS = 900
-SILENCE_NUDGE_INTERVAL_SECONDS = 300
+SILENCE_NUDGE_INTERVAL_SECONDS = 900
 # 세션 목록의 running 상태는 비정상 종료/중단 뒤에도 남을 수 있다.
 # 관제 화면은 "현재 작업"만 보여야 하므로, 최근 갱신이 없는 running 세션은
 # 작업/지연으로 올리지 않고 고아 세션으로 제외한다.
@@ -310,6 +310,35 @@ def update_work_item(agent_id: str, request_id: str, status: str, *, report: boo
         save_work_state(data)
 
 
+def close_latest_active_work_from_report(agent_id: str, session_key: str, text: str, ts: int | None = None) -> bool:
+    if not text or is_internal_status_text(text) or is_progress_only_report_text(text):
+        return False
+    now = int(time.time() * 1000)
+    report_ts = ts or now
+    failed = text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return False
+    candidates = [
+        item for item in items
+        if isinstance(item, dict)
+        and item.get("status") in {"working", "reporting", "verifying"}
+        and int(item.get("startedAt") or 0) <= report_ts
+        and (not session_key or item.get("sessionKey") == session_key)
+    ]
+    if not candidates:
+        return False
+    item = max(candidates, key=lambda x: int(x.get("updatedAt") or x.get("startedAt") or 0))
+    item["status"] = "failed" if failed else "reported"
+    item["updatedAt"] = now
+    item["lastReportAt"] = report_ts
+    item["reportedAt"] = report_ts
+    if failed:
+        item["reason"] = text[:500]
+    save_work_state(data)
+    return True
+
 def active_work_item(agent_id: str) -> dict[str, Any] | None:
     items = load_work_state().get(agent_id, [])
     if not isinstance(items, list):
@@ -438,7 +467,11 @@ def base_observer_chat_session_key(agent_id: str) -> str:
 
 
 def desired_observer_chat_session_key(agent_id: str) -> str:
-    return load_active_chat_sessions().get(agent_id) or base_observer_chat_session_key(agent_id)
+    configured = load_active_chat_sessions().get(agent_id)
+    prefix = base_observer_chat_session_key(agent_id)
+    if configured and (configured == prefix or configured.startswith(prefix + ":")):
+        return configured
+    return prefix
 
 
 def agent_session_key_rows(agent_id: str, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -467,25 +500,16 @@ def existing_agent_session_keys(agent_id: str) -> list[dict[str, Any]]:
 
 def observer_chat_session_key_from_rows(agent_id: str, rows: list[dict[str, Any]]) -> str:
     desired = desired_observer_chat_session_key(agent_id)
+    base_key = base_observer_chat_session_key(agent_id)
     keys = [str(row.get("key") or "") for row in rows]
     if desired in keys:
         return desired
-    preferred_suffixes = (":observer-site", ":telegram:direct:7872172509", f":{agent_id}")
-    for suffix in preferred_suffixes:
-        for row in rows:
-            key = str(row.get("key") or "")
-            status = str(row.get("status") or "").lower()
-            if key.endswith(suffix) and status not in {"failed", "error"}:
-                return key
-    for row in rows:
-        status = str(row.get("status") or "").lower()
-        key = str(row.get("key") or "")
-        if status not in {"failed", "error"} and key:
-            return key
-    for suffix in preferred_suffixes:
-        for key in keys:
-            if key.endswith(suffix):
-                return key
+    rotated = [key for key in keys if key.startswith(base_key + ":")]
+    if rotated:
+        rotated.sort(reverse=True)
+        return rotated[0]
+    if base_key in keys:
+        return base_key
     return desired
 
 
@@ -834,15 +858,46 @@ def build_message_with_attachments(message: str, saved: list[dict[str, Any]]) ->
     return "\n".join(lines)
 
 
-def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, Any]] | None = None) -> str | None:
-    if attachments:
-        return None
+def normalized_chat_text(message: str) -> str:
+    return "".join(ch for ch in str(message or "").lower() if ch.isalnum() or "가" <= ch <= "힣")
+
+
+def is_simple_ping_or_test(message: str, attachments: list[dict[str, Any]] | None = None) -> bool:
     text = str(message or "").strip()
-    normalized = text.replace(" ", "").lower()
-    pings = {"야", "뭐해", "뭐함", "있어?", "듣고있어?", "대답해", "테스트"}
-    if normalized in pings or (normalized.endswith("?") and len(normalized) <= 8):
+    normalized = normalized_chat_text(text)
+    simple = {
+        "야", "뭐해", "뭐함", "있어", "듣고있어", "대답해", "테스트", "test",
+        "ping", "핑", "확인", "응답해", "뭐야", "왜", "왜그래", "이미지테스트",
+    }
+    return normalized in simple or (not attachments and text.endswith("?") and len(normalized) <= 10)
+
+
+def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, Any]] | None = None) -> str | None:
+    if attachments and not is_simple_ping_or_test(message, attachments):
+        return None
+    if is_simple_ping_or_test(message, attachments):
         return f"네, 기선님. {agent_name} 듣고 있습니다."
     return None
+
+
+def is_work_request_message(message: str, attachments: list[dict[str, Any]] | None = None) -> bool:
+    if is_simple_ping_or_test(message, attachments):
+        return False
+    text = str(message or "").strip().lower()
+    normalized = normalized_chat_text(text)
+    if (normalized.endswith("뭐야") or normalized.endswith("뭐지") or normalized.endswith("뭐니")) and not any(token in normalized for token in ("해줘", "고쳐", "수정", "구현", "만들")):
+        return False
+    work_markers = (
+        "해줘", "해봐", "하자", "고쳐", "수정", "구현", "만들", "추가",
+        "삭제", "정리", "조사", "찾아", "확인해", "분석", "리뷰", "감사",
+        "audit", "fix", "implement", "refactor", "review", "test", "검증",
+        "커밋", "푸시", "배포", "실행", "적용", "바꿔", "개선", "점검",
+    )
+    if any(marker in normalized or marker in text for marker in work_markers):
+        return True
+    if attachments and text and not is_simple_ping_or_test(message, attachments):
+        return True
+    return False
 
 
 def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
@@ -898,7 +953,13 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             text,
             {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"},
         )
-        update_work_item(agent_id, request_id, "reported", report=True)
+        if is_progress_only_report_text(text):
+            update_work_item(agent_id, request_id, "reporting", report=True)
+        elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
+            update_work_item(agent_id, request_id, "failed", report=True, reason=text)
+        else:
+            update_work_item(agent_id, request_id, "reported", report=True)
+            close_latest_active_work_from_report(agent_id, session_key, text)
     except Exception as exc:
         replace_history_message(
             agent_id,
@@ -947,7 +1008,8 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
         history_payload = public_history(agent_id, mark_read=False)
         return {"ok": True, "accepted": True, "pending": False, "quickAck": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
-    register_work_item(agent_id, request_id, outbound_message, session_key)
+    if is_work_request_message(message, saved_attachments):
+        register_work_item(agent_id, request_id, outbound_message, session_key)
     report_contract = (
         "\n\n[관제 보고 규칙] "
         "작업 요청이면 시작보고와 완료보고를 구분하세요. "
@@ -1014,11 +1076,11 @@ def send_silence_nudge(agent_id: str, request_id: str | None = None) -> None:
     if not agent:
         return
     session_key = observer_chat_session_key(agent_id)
-    append_history(agent_id, "system", "무음 경고: 2분 이상 가시 보고가 없습니다. 현재 상태를 보고하라고 자동 요청했습니다.", {"status": "silence-warning", "sessionKey": session_key, "requestId": request_id})
+    append_history(agent_id, "system", "시스템: 무음 경고 · 상태보고 요청됨", {"status": "silence-warning", "sessionKey": session_key, "requestId": request_id})
     message = (
-        "[관제 무음 경고] 2분 이상 가시 보고가 없습니다. "
-        "지금 현재 상태를 짧게 보고하세요. 작업 중이면 진행률/현재 단계/막힌 점/다음 조치를 말하고, "
-        "완료했다면 최종 산출물과 검증 결과를 보고하세요. 시작보고만 하지 마세요."
+        "상태 보고 요청: 2분 이상 관제 웹에 가시 보고가 없습니다. "
+        "현재 상태를 짧게 보고하세요. 작업 중이면 진행률/현재 단계/막힌 점/다음 조치, "
+        "완료했다면 최종 산출물과 검증 결과를 관제 웹 채팅에 보고하세요."
     )
     try:
         gateway_call("sessions.send", {"key": session_key, "message": message}, timeout=18)
@@ -1042,7 +1104,9 @@ def maybe_auto_nudge(agent: dict[str, Any]) -> None:
     if agent.get("needsSilenceReport"):
         work = agent.get("activeWork") if isinstance(agent.get("activeWork"), dict) else {}
         request_id = str(work.get("requestId") or "")
-        key = f"silence:{agent_id}:{request_id or 'none'}"
+        if not request_id and not agent.get("reportDebt"):
+            return
+        key = f"silence:{agent_id}:{request_id or 'report-debt'}"
         last = int(nudges.get(key, 0) or 0)
         if now - last >= SILENCE_NUDGE_INTERVAL_SECONDS:
             nudges[key] = now
@@ -1595,6 +1659,10 @@ def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, A
 
 
 def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: str | None = None) -> dict[str, Any] | None:
+    active = active_work_item(agent_id)
+    if not active:
+        return None
+    started = int(active.get("startedAt") or 0)
     last_report_ts = latest_visible_agent_report_ts(agent_id, sessions, chat_key)
     candidates: list[tuple[int, str]] = []
     h_ts, h_reason = latest_history_work_evidence_ms(agent_id)
@@ -1607,6 +1675,7 @@ def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: 
         g_ts, g_reason = latest_observer_git_evidence_ms()
         if g_ts and g_reason:
             candidates.append((g_ts, g_reason))
+    candidates = [(ts, reason) for ts, reason in candidates if ts >= started]
     if not candidates:
         return None
     evidence_ts, reason = max(candidates, key=lambda item: item[0])

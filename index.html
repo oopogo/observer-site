@@ -755,6 +755,25 @@
         border: 1px solid rgba(255, 255, 255, 0.1);
       }
 
+      .message.status-silence-warning {
+        max-width: 72%;
+        color: #ffd89a;
+        background: rgba(255, 184, 77, 0.10);
+        border: 1px solid rgba(255, 184, 77, 0.28);
+        font-weight: 800;
+      }
+
+      .message.status-silence-warning::before {
+        content: 'SYSTEM';
+        display: inline-block;
+        margin-right: 8px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: rgba(255, 184, 77, 0.18);
+        font-size: 10px;
+        letter-spacing: .08em;
+      }
+
       .message.user {
         margin-left: auto;
         color: #071018;
@@ -1838,7 +1857,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-08-1005';
+      const BUILD_ID = '2026-05-08-1138';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -1874,8 +1893,9 @@
 
       function stateLabel(state, agent = null) {
         if (state === 'working') return '작업중';
-        if (state === 'assigned' || state === 'reporting') return agent && agent.statusText ? String(agent.statusText) : (state === 'reporting' ? '보고 대기' : '응답 대기');
-        if (state === 'warning' || state === 'stale') return '점검';
+        if (agent && agent.needsSilenceReport) return '무응답 경고';
+        if (state === 'assigned' || state === 'reporting') return agent && agent.statusText ? String(agent.statusText).replace('보고 누락', '보고 미수신').replace('보고 대기', '보고 미수신').replace('응답 대기', '응답 미수신') : (state === 'reporting' ? '보고 미수신' : '응답 미수신');
+        if (state === 'warning' || state === 'stale') return '관제 점검';
         if (state === 'failed') return '실패';
         return '응답 가능';
       }
@@ -1978,7 +1998,7 @@
         body.innerHTML = '';
         for (const msg of visibleMessages(messages)) {
           const div = document.createElement('div');
-          div.className = `message ${msg.role === 'user' ? 'user' : 'system'}`;
+          div.className = `message ${msg.role === 'user' ? 'user' : 'system'} ${msg.status ? `status-${String(msg.status).replace(/[^a-z0-9_-]/gi, '-')}` : ''}`.trim();
           div.innerHTML = messageHtml(msg);
           body.appendChild(div);
         }
@@ -2043,9 +2063,9 @@
       }
 
       function renderTags(agent) {
-        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 누락' : (agent.isReportPending ? '보고 대기' : (agent.isAssigned ? (agent.statusText || '응답 대기') : '현재 생성 중 아님')));
-        const silenceTag = agent.needsSilenceReport ? `무음 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
-        const workTag = agent.activeWork ? '작업등록' : '';
+        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 미수신' : (agent.isReportPending ? '보고 미수신' : (agent.isAssigned ? ((agent.statusText || '응답 미수신').replace('응답 대기', '응답 미수신')) : '대기')));
+        const silenceTag = agent.needsSilenceReport ? `무응답 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
+        const workTag = agent.activeWork ? '작업 등록됨' : '';
         const routeTag = agent.controlRoute === 'observer-web' ? 'WEB 제어' : '';
         const tags = [agent.role, workingTag, silenceTag, workTag, routeTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 8);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
@@ -2069,7 +2089,7 @@
           <div class="orb">${orbContent}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
-            <div class="status">${escapeHtml(agent.detail || agent.statusText || '상태 확인 중')}</div>
+            <div class="status">${escapeHtml(agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중')))}</div>
             ${renderContextBattery(agent)}
             ${renderTags(agent)}
             ${renderSubagents(agent)}
@@ -2311,7 +2331,7 @@
         bodyEl.innerHTML = '';
         for (const msg of visibleMessages(messages)) {
           const div = document.createElement('div');
-          div.className = `message ${msg.role === 'user' ? 'user' : 'system'}`;
+          div.className = `message ${msg.role === 'user' ? 'user' : 'system'} ${msg.status ? `status-${String(msg.status).replace(/[^a-z0-9_-]/gi, '-')}` : ''}`.trim();
           div.innerHTML = messageHtml(msg);
           bodyEl.appendChild(div);
         }
@@ -2459,7 +2479,7 @@
         countWarning.textContent = warningCount;
         countSilence.textContent = silenceCount;
         idleLabel.textContent = `${idleCount} 응답 가능`;
-        workingLabel.textContent = `${assignedCount + reportingCount + workingCount + laggingCount + warningCount + silenceCount} 응답대기/보고대기/작업/점검/무음`;
+        workingLabel.textContent = `관제 대상 ${assignedCount + reportingCount + workingCount + laggingCount + warningCount + silenceCount} · 응답/보고 미수신 포함`;
 
         idleAgents.innerHTML = '';
         workingAgents.innerHTML = '';
