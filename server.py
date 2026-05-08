@@ -32,6 +32,7 @@ SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 WORK_STATE_PATH = DATA_DIR / "work-state.json"
+SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -273,6 +274,71 @@ def save_work_state(data: dict[str, Any]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     WORK_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     invalidate_agents_cache()
+
+
+def load_self_work_state() -> dict[str, Any]:
+    try:
+        data = json.loads(SELF_WORK_STATE_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_self_work_state(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    SELF_WORK_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    invalidate_agents_cache()
+
+
+def register_self_work(message: str, request_id: str | None = None) -> dict[str, Any]:
+    now = int(time.time() * 1000)
+    data = load_self_work_state()
+    item = {
+        "requestId": request_id or f"self-{uuid.uuid4()}",
+        "status": "working",
+        "message": str(message or "").strip()[:500],
+        "startedAt": now,
+        "updatedAt": now,
+        "lastReportAt": 0,
+    }
+    items = data.setdefault("items", [])
+    if not isinstance(items, list):
+        items = []
+        data["items"] = items
+    items.append(item)
+    del items[:-50]
+    save_self_work_state(data)
+    return item
+
+
+def update_self_work(request_id: str, status: str, report: str | None = None) -> dict[str, Any] | None:
+    now = int(time.time() * 1000)
+    data = load_self_work_state()
+    items = data.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.get("requestId") != request_id:
+            continue
+        item["status"] = status
+        item["updatedAt"] = now
+        if report:
+            item["report"] = report[:1000]
+            item["lastReportAt"] = now
+            item["reportedAt"] = now
+        save_self_work_state(data)
+        return item
+    return None
+
+
+def active_self_work_item() -> dict[str, Any] | None:
+    items = load_self_work_state().get("items", [])
+    if not isinstance(items, list):
+        return None
+    active = [item for item in items if isinstance(item, dict) and item.get("status") in {"working", "reporting", "verifying"}]
+    if not active:
+        return None
+    return max(active, key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0))
 
 
 def register_work_item(agent_id: str, request_id: str, message: str, session_key: str) -> None:
@@ -880,8 +946,8 @@ def is_progress_only_report_text(text: str) -> bool:
         return False
     # Only block very explicit start-only reports. Do not treat ordinary answers
     # like "확인했습니다 ... 기준을 바꾸겠습니다" as incomplete.
-    future_report_markers = ("완료되면", "완료 전까지", "끝나면", "보고하겠습니다")
-    start_markers = ("시작합니다", "시작했습니다", "진행하겠습니다", "진행합니다", "착수합니다")
+    future_report_markers = ("완료되면", "완료 전까지", "끝나면", "보고하겠습니다", "보고드리겠습니다", "완료 후", "끝나는 대로")
+    start_markers = ("시작합니다", "시작했습니다", "진행하겠습니다", "진행합니다", "착수합니다", "바로 넣겠습니다", "바로 수정", "확인하겠습니다", "보겠습니다")
     if any(marker in value for marker in future_report_markers):
         return True
     return any(marker in value for marker in start_markers) and len(value) < 500
@@ -1987,6 +2053,12 @@ def summarize_agents() -> dict[str, Any]:
             debt_age_s = max(0, (now - int(report_debt.get("ts") or now)) // 1000)
             detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
         active_work = active_work_item(base["id"])
+        self_work = active_self_work_item() if base["id"] == "observer" else None
+        if self_work and state == "idle":
+            state = "reporting"
+            status_text = "보고 대기"
+            started = int(self_work.get("startedAt") or now)
+            detail = f"보고 대기 · 후타바 직접 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
         if active_work and state == "idle":
             state = "reporting"
             status_text = "보고 대기"
@@ -2017,6 +2089,7 @@ def summarize_agents() -> dict[str, Any]:
             "silenceAgeMs": silence_age_ms,
             "needsSilenceReport": needs_silence_report,
             "activeWork": active_work,
+            "selfWork": self_work if base["id"] == "observer" else None,
             "controlRoute": "observer-web",
             "chatSessionKey": chat_key,
             "isLagging": is_lagging,
@@ -2232,6 +2305,9 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             self.json_response(payload)
             return
+        if path == "/api/observer/self-work":
+            self.json_response({"ok": True, "state": load_self_work_state(), "active": active_self_work_item()})
+            return
         if path == "/api/gateway-status":
             cached = cache_get("gateway")
             if cache_is_fresh(cached):
@@ -2286,6 +2362,14 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/agent/settings":
                 result = save_single_agent_setting(agent_id, data.get("displayName"), data.get("avatar"))
                 self.json_response(result)
+                return
+            if path == "/api/observer/self-work/register":
+                result = register_self_work(str(data.get("message") or ""), str(data.get("requestId") or "") or None)
+                self.json_response({"ok": True, "item": result})
+                return
+            if path == "/api/observer/self-work/report":
+                result = update_self_work(str(data.get("requestId") or ""), str(data.get("status") or "reported"), str(data.get("report") or ""))
+                self.json_response({"ok": bool(result), "item": result})
                 return
             self.json_response({"ok": False, "error": "not found"}, 404)
         except Exception as exc:
