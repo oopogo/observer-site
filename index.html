@@ -1856,8 +1856,8 @@
       const AGENTS_REFRESH_IDLE_MS = 30000;
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
-      const CHAT_REFRESH_MS = 5000;
-      const BUILD_ID = '2026-05-08-1619';
+      const CHAT_REFRESH_MS = 7000;
+      const BUILD_ID = '2026-05-08-1631';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2344,7 +2344,7 @@
         const panelState = openChatPanels.get(agentId);
         if (!panelState) return;
         try {
-          const messages = await loadHistory(agentId, Boolean(options.markRead));
+          const messages = await loadHistory(agentId, Boolean(options.markRead), Boolean(options.sync));
           renderPanelMessages(panelState.el, messages, options);
         } catch (error) {
           renderPanelMessages(panelState.el, [{ role: 'system', content: `대화 기록 조회 실패: ${error}` }], { forceScroll: true });
@@ -2432,7 +2432,7 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ agentId, message: text, attachments }),
             });
-            await refreshPanel(agentId, { forceScroll: true });
+            await refreshPanel(agentId, { forceScroll: true, sync: true });
             await loadAgents();
           } catch (error) {
             renderPanelMessages(panel, [{ role: 'system', content: `전송 실패: ${error}` }], { forceScroll: true });
@@ -2441,7 +2441,7 @@
             inputEl.focus();
           }
         });
-        refreshPanel(agentId, { forceScroll: true });
+        refreshPanel(agentId, { forceScroll: true, sync: true });
         state.timer = window.setInterval(() => refreshPanel(agentId), CHAT_REFRESH_MS);
         updateMultiChatGridClass();
         renderMultiChatAgentList();
@@ -2590,8 +2590,11 @@
         return false;
       }
 
-      async function loadHistory(agentId, markRead = false) {
-        const res = await fetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}${markRead ? '&markRead=1' : ''}`, { cache: 'no-store' });
+      async function loadHistory(agentId, markRead = false, sync = false) {
+        const params = new URLSearchParams({ agentId });
+        if (markRead) params.set('markRead', '1');
+        if (sync) params.set('sync', '1');
+        const res = await fetch(`/api/chat/history?${params.toString()}`, { cache: 'no-store' });
         const payload = await res.json();
         if (!payload.ok) throw new Error(payload.error || '대화 기록 조회 실패');
         return payload.messages || [];
@@ -2632,7 +2635,7 @@
         pushOverlayHistory('chat');
         body.innerHTML = '<div class="message system">대화 기록을 불러오는 중입니다...</div>';
         try {
-          const messages = await loadHistory(nextAgent, true);
+          const messages = await loadHistory(nextAgent, true, true);
           if (requestSeq !== chatRequestSeq || selectedAgent !== nextAgent || !backdrop.classList.contains('open')) return;
           if (!messages.length) {
             renderMessages([
@@ -3021,7 +3024,7 @@
 
       loadGatewayStatus();
       pollAgentsLoop();
-      window.setInterval(loadGatewayStatus, 10000);
+      window.setInterval(loadGatewayStatus, 30000);
     </script>
   </body>
 </html>

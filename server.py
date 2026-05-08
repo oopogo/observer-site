@@ -45,6 +45,8 @@ MAX_CHAT_IMAGES = 6
 AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
 SESSIONS_CACHE: dict[str, Any] | None = None
+HISTORY_SYNC_TS: dict[str, float] = {}
+SANITIZE_SYNC_TS = 0.0
 CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
@@ -686,9 +688,23 @@ def sync_latest_session_file_report(agent_id: str) -> int:
     return appended
 
 
-def public_history(agent_id: str, mark_read: bool = False) -> dict[str, Any]:
-    sanitize_internal_done_messages()
-    sync_latest_session_file_report(agent_id)
+def maybe_sync_history_light(agent_id: str) -> None:
+    global SANITIZE_SYNC_TS
+    now = time.time()
+    # These scans are expensive on large transcript/history files. They are not
+    # needed for every 5s UI poll; run them opportunistically at most every 30s.
+    if now - SANITIZE_SYNC_TS >= 30:
+        sanitize_internal_done_messages()
+        SANITIZE_SYNC_TS = now
+    last = HISTORY_SYNC_TS.get(agent_id, 0.0)
+    if now - last >= 30:
+        sync_latest_session_file_report(agent_id)
+        HISTORY_SYNC_TS[agent_id] = now
+
+
+def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -> dict[str, Any]:
+    if sync:
+        maybe_sync_history_light(agent_id)
     # 중요: 채팅창은 로컬 브리지 히스토리만 즉시 반환한다.
     # Gateway sessions.get 동기화는 느리고, observer처럼 작업 세션과 관제 채팅
     # 세션키가 겹칠 때 도구 로그/다른 흐름을 채팅창에 섞는다.
