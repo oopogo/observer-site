@@ -958,6 +958,7 @@ def is_simple_ping_or_test(message: str, attachments: list[dict[str, Any]] | Non
     simple = {
         "야", "뭐해", "뭐함", "있어", "듣고있어", "대답해", "테스트", "test",
         "ping", "핑", "확인", "응답해", "뭐야", "왜", "왜그래", "이미지테스트",
+        "안녕", "안녕하세요", "ㅎㅇ", "하이", "hello", "hi",
     }
     return normalized in simple or (not attachments and text.endswith("?") and len(normalized) <= 10)
 
@@ -1506,10 +1507,10 @@ def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
     for item in entries:
         if item.get("role") != "assistant":
             continue
-        if item.get("status") not in {"done", "error"}:
+        if item.get("status") not in {"done", "error", "synced"}:
             continue
         content = str(item.get("content") or "")
-        if is_internal_status_text(content) or is_progress_only_report_text(content):
+        if is_internal_status_text(content):
             continue
         latest = max(latest, int(item.get("ts") or 0))
     return latest
@@ -1551,9 +1552,16 @@ def latest_report_pending_ms(agent_id: str) -> int:
             latest_user_ts = max(latest_user_ts, ts)
     if not latest_user_ts:
         return 0
+    latest_user_text = ""
+    for item in entries:
+        if item.get("role") == "user" and int(item.get("ts") or 0) == latest_user_ts:
+            latest_user_text = str(item.get("content") or "")
+            break
+    if is_simple_ping_or_test(latest_user_text):
+        return 0
     for item in entries:
         ts = int(item.get("ts") or 0)
-        if ts <= latest_user_ts or item.get("role") != "assistant" or item.get("status") not in {"done", "error"}:
+        if ts <= latest_user_ts or item.get("role") != "assistant" or item.get("status") not in {"done", "error", "synced"}:
             continue
         content = str(item.get("content") or "")
         if is_internal_status_text(content):
