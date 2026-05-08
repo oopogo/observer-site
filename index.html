@@ -1838,7 +1838,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 5000;
       const AGENTS_REFRESH_BACKGROUND_MS = 30000;
       const CHAT_REFRESH_MS = 800;
-      const BUILD_ID = '2026-05-07-2322';
+      const BUILD_ID = '2026-05-08-1005';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2045,7 +2045,9 @@
       function renderTags(agent) {
         const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 누락' : (agent.isReportPending ? '보고 대기' : (agent.isAssigned ? (agent.statusText || '응답 대기') : '현재 생성 중 아님')));
         const silenceTag = agent.needsSilenceReport ? `무음 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
-        const tags = [agent.role, workingTag, silenceTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 7);
+        const workTag = agent.activeWork ? '작업등록' : '';
+        const routeTag = agent.controlRoute === 'observer-web' ? 'WEB 제어' : '';
+        const tags = [agent.role, workingTag, silenceTag, workTag, routeTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 8);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
 

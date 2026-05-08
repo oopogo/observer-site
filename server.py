@@ -31,6 +31,7 @@ CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
 SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
+WORK_STATE_PATH = DATA_DIR / "work-state.json"
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -48,6 +49,7 @@ CACHE_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
 NUDGE_INTERVAL_SECONDS = 900
+SILENCE_NUDGE_INTERVAL_SECONDS = 300
 # 세션 목록의 running 상태는 비정상 종료/중단 뒤에도 남을 수 있다.
 # 관제 화면은 "현재 작업"만 보여야 하므로, 최근 갱신이 없는 running 세션은
 # 작업/지연으로 올리지 않고 고아 세션으로 제외한다.
@@ -248,6 +250,89 @@ def load_history() -> dict[str, list[dict[str, Any]]]:
 def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+
+
+def load_work_state() -> dict[str, Any]:
+    try:
+        data = json.loads(WORK_STATE_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_work_state(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    WORK_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    invalidate_agents_cache()
+
+
+def register_work_item(agent_id: str, request_id: str, message: str, session_key: str) -> None:
+    now = int(time.time() * 1000)
+    data = load_work_state()
+    items = data.setdefault(agent_id, [])
+    if not isinstance(items, list):
+        items = []
+        data[agent_id] = items
+    items.append({
+        "requestId": request_id,
+        "sessionKey": session_key,
+        "status": "working",
+        "startedAt": now,
+        "updatedAt": now,
+        "lastReportAt": 0,
+        "lastNudgeAt": 0,
+        "message": str(message or "").strip()[:500],
+    })
+    del items[:-30]
+    save_work_state(data)
+
+
+def update_work_item(agent_id: str, request_id: str, status: str, *, report: bool = False, reason: str | None = None) -> None:
+    now = int(time.time() * 1000)
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return
+    changed = False
+    for item in items:
+        if not isinstance(item, dict) or item.get("requestId") != request_id:
+            continue
+        item["status"] = status
+        item["updatedAt"] = now
+        if report:
+            item["lastReportAt"] = now
+            item["reportedAt"] = now
+        if reason:
+            item["reason"] = reason[:500]
+        changed = True
+        break
+    if changed:
+        save_work_state(data)
+
+
+def active_work_item(agent_id: str) -> dict[str, Any] | None:
+    items = load_work_state().get(agent_id, [])
+    if not isinstance(items, list):
+        return None
+    active = [item for item in items if isinstance(item, dict) and item.get("status") in {"working", "reporting", "verifying"}]
+    if not active:
+        return None
+    active.sort(key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0), reverse=True)
+    return active[0]
+
+
+def mark_work_nudged(agent_id: str, request_id: str) -> None:
+    now = int(time.time() * 1000)
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if isinstance(item, dict) and item.get("requestId") == request_id:
+            item["lastNudgeAt"] = now
+            item["updatedAt"] = now
+            break
+    save_work_state(data)
 
 
 def load_cleanup_state() -> dict[str, Any]:
@@ -813,6 +898,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             text,
             {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"},
         )
+        update_work_item(agent_id, request_id, "reported", report=True)
     except Exception as exc:
         replace_history_message(
             agent_id,
@@ -821,6 +907,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             f"실패: 에이전트 최종 응답을 받지 못했습니다. {exc}",
             {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key},
         )
+        update_work_item(agent_id, request_id, "failed", report=True, reason=str(exc))
 
 
 def cached_sessions_if_fresh() -> list[dict[str, Any]]:
@@ -860,6 +947,7 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
         history_payload = public_history(agent_id, mark_read=False)
         return {"ok": True, "accepted": True, "pending": False, "quickAck": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
+    register_work_item(agent_id, request_id, outbound_message, session_key)
     report_contract = (
         "\n\n[관제 보고 규칙] "
         "작업 요청이면 시작보고와 완료보고를 구분하세요. "
@@ -921,18 +1009,47 @@ def save_nudges(data: dict[str, Any]) -> None:
     NUDGE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def send_silence_nudge(agent_id: str, request_id: str | None = None) -> None:
+    agent = next((a for a in AGENTS if a["id"] == agent_id), None)
+    if not agent:
+        return
+    session_key = observer_chat_session_key(agent_id)
+    append_history(agent_id, "system", "무음 경고: 2분 이상 가시 보고가 없습니다. 현재 상태를 보고하라고 자동 요청했습니다.", {"status": "silence-warning", "sessionKey": session_key, "requestId": request_id})
+    message = (
+        "[관제 무음 경고] 2분 이상 가시 보고가 없습니다. "
+        "지금 현재 상태를 짧게 보고하세요. 작업 중이면 진행률/현재 단계/막힌 점/다음 조치를 말하고, "
+        "완료했다면 최종 산출물과 검증 결과를 보고하세요. 시작보고만 하지 마세요."
+    )
+    try:
+        gateway_call("sessions.send", {"key": session_key, "message": message}, timeout=18)
+    except Exception as exc:
+        append_history(agent_id, "system", f"무음 경고 전달 실패: {exc}", {"status": "silence-warning-error", "hidden": True, "sessionKey": session_key})
+
+
 def maybe_auto_nudge(agent: dict[str, Any]) -> None:
     agent_id = str(agent.get("id") or "")
-    if not agent_id or not agent.get("isLagging"):
+    if not agent_id:
         return
     now = int(time.time())
     nudges = load_nudges()
-    last = int(nudges.get(agent_id, 0) or 0)
-    if now - last < NUDGE_INTERVAL_SECONDS:
-        return
-    nudges[agent_id] = now
-    save_nudges(nudges)
-    threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
+    if agent.get("isLagging"):
+        key = f"lag:{agent_id}"
+        last = int(nudges.get(key, 0) or 0)
+        if now - last >= NUDGE_INTERVAL_SECONDS:
+            nudges[key] = now
+            save_nudges(nudges)
+            threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
+    if agent.get("needsSilenceReport"):
+        work = agent.get("activeWork") if isinstance(agent.get("activeWork"), dict) else {}
+        request_id = str(work.get("requestId") or "")
+        key = f"silence:{agent_id}:{request_id or 'none'}"
+        last = int(nudges.get(key, 0) or 0)
+        if now - last >= SILENCE_NUDGE_INTERVAL_SECONDS:
+            nudges[key] = now
+            save_nudges(nudges)
+            if request_id:
+                mark_work_nudged(agent_id, request_id)
+            threading.Thread(target=lambda: send_silence_nudge(agent_id, request_id or None), daemon=True).start()
 
 
 def get_agent_session_detail(agent_id: str) -> dict[str, Any]:
@@ -1588,8 +1705,16 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "보고 누락"
             debt_age_s = max(0, (now - int(report_debt.get("ts") or now)) // 1000)
             detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
+        active_work = active_work_item(base["id"])
+        if active_work and state == "idle":
+            state = "reporting"
+            status_text = "보고 대기"
+            started = int(active_work.get("startedAt") or now)
+            detail = f"보고 대기 · 등록 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
         last_visible_report_ts = latest_visible_agent_report_ts(base["id"], agent_sessions, chat_key)
-        silence_age_ms = max(0, now - last_visible_report_ts) if last_visible_report_ts else 0
+        work_started_ts = int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else 0
+        silence_base_ts = max(last_visible_report_ts, work_started_ts)
+        silence_age_ms = max(0, now - silence_base_ts) if silence_base_ts else 0
         needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= SILENCE_WARNING_MS
         if needs_silence_report:
             status_text = "무음 경고" if state == "working" else f"{status_text} · 무음"
@@ -1610,6 +1735,9 @@ def summarize_agents() -> dict[str, Any]:
             "lastVisibleReportTs": last_visible_report_ts,
             "silenceAgeMs": silence_age_ms,
             "needsSilenceReport": needs_silence_report,
+            "activeWork": active_work,
+            "controlRoute": "observer-web",
+            "chatSessionKey": chat_key,
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
