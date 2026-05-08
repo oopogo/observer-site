@@ -1857,7 +1857,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 7000;
-      const BUILD_ID = '2026-05-08-1654';
+      const BUILD_ID = '2026-05-09-0014';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2640,6 +2640,9 @@
         body.innerHTML = '<div class="message system">대화 기록을 불러오는 중입니다...</div>';
         try {
           const messages = await loadHistory(nextAgent, true, true);
+          // markRead=1 updates server-side read state; refresh cards immediately
+          // so the red unread badge does not show a stale count after opening chat.
+          loadAgents();
           if (requestSeq !== chatRequestSeq || selectedAgent !== nextAgent || !backdrop.classList.contains('open')) return;
           if (!messages.length) {
             renderMessages([
