@@ -148,8 +148,8 @@
 
       .summary {
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 7px;
         margin-bottom: 14px;
       }
 
@@ -162,21 +162,22 @@
 
       .metric {
         border-radius: 18px;
-        padding: 12px 13px;
+        padding: 10px 11px;
         min-width: 0;
       }
 
       .metric strong {
         display: block;
-        font-size: 22px;
+        font-size: 20px;
         line-height: 1;
       }
 
       .metric span {
         display: block;
-        margin-top: 6px;
+        margin-top: 5px;
         color: var(--muted);
-        font-size: 12px;
+        font-size: 11px;
+        white-space: nowrap;
       }
 
       .board {
@@ -1609,6 +1610,10 @@
         font: inherit;
       }
 
+      @media (max-width: 1100px) {
+        .summary { grid-template-columns: repeat(7, minmax(72px, 1fr)); overflow-x: auto; padding-bottom: 2px; }
+      }
+
       @media (max-width: 920px) {
         .multi-chat-layout { grid-template-columns: 1fr; }
       }
@@ -1857,7 +1862,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 7000;
-      const BUILD_ID = '2026-05-09-0014';
+      const BUILD_ID = '2026-05-09-0058';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
