@@ -1363,12 +1363,17 @@ def maybe_auto_nudge(agent: dict[str, Any]) -> None:
             threading.Thread(target=lambda: send_recovery_nudge(agent_id), daemon=True).start()
     self_work = agent.get("selfWork") if isinstance(agent.get("selfWork"), dict) else {}
     if agent.get("selfWorkReportDue") and self_work:
-        key = f"self-work:{agent_id}:{self_work.get('requestId') or 'active'}"
+        request_id = str(self_work.get("requestId") or "")
+        task = str(self_work.get("message") or "후타바 직접 작업").strip()[:80]
+        key = f"self-work:{agent_id}:{request_id or 'active'}"
         last = int(nudges.get(key, 0) or 0)
-        if now - last >= 60:
+        # 같은 미완료 self-work가 1분마다 채팅을 도배하지 않도록 일반 무음 경고와
+        # 같은 15분 쿨다운을 사용한다. 카드/상세 상태는 계속 표시하되 채팅에는
+        # 작업명과 requestId가 들어간 이벤트만 남긴다.
+        if now - last >= SILENCE_NUDGE_INTERVAL_SECONDS:
             nudges[key] = now
             save_nudges(nudges)
-            append_history(agent_id, "system", "시스템: 후타바 직접 작업 보고 기한 초과 · 중간/완료 보고 필요", {"status": "self-work-report-due", "sessionKey": observer_chat_session_key(agent_id), "requestId": str(self_work.get("requestId") or "")})
+            append_history(agent_id, "system", f"시스템: 후타바 직접 작업 보고 기한 초과 · {task} · 중간/완료 보고 필요", {"status": "self-work-report-due", "sessionKey": observer_chat_session_key(agent_id), "requestId": request_id})
     if agent.get("needsSilenceReport"):
         if not SILENCE_AUTO_NUDGE_ENABLED:
             return
