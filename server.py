@@ -313,7 +313,7 @@ def register_self_work(message: str, request_id: str | None = None) -> dict[str,
     return item
 
 
-def update_self_work(request_id: str, status: str, report: str | None = None) -> dict[str, Any] | None:
+def update_self_work(request_id: str, status: str, report: str | None = None, *, append_chat_report: bool = False) -> dict[str, Any] | None:
     now = int(time.time() * 1000)
     data = load_self_work_state()
     items = data.get("items")
@@ -329,6 +329,15 @@ def update_self_work(request_id: str, status: str, report: str | None = None) ->
             item["lastReportAt"] = now
             item["reportedAt"] = now
         save_self_work_state(data)
+        if append_chat_report and report:
+            append_history("observer", "assistant", str(report), {
+                "requestId": request_id,
+                "sessionKey": observer_chat_session_key("observer"),
+                "status": "done",
+                "done": True,
+                "pending": False,
+                "selfWorkReport": True,
+            })
         return item
     return None
 
@@ -2389,7 +2398,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.json_response({"ok": True, "item": result})
                 return
             if path == "/api/observer/self-work/report":
-                result = update_self_work(str(data.get("requestId") or ""), str(data.get("status") or "reported"), str(data.get("report") or ""))
+                result = update_self_work(str(data.get("requestId") or ""), str(data.get("status") or "reported"), str(data.get("report") or ""), append_chat_report=True)
                 self.json_response({"ok": bool(result), "item": result})
                 return
             self.json_response({"ok": False, "error": "not found"}, 404)
