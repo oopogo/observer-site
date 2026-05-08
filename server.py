@@ -730,11 +730,23 @@ def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -
         return not is_internal_status_text(content)
 
     visible = []
+    seen_content_by_base_request: dict[str, set[str]] = {}
     for item in messages:
         if not is_visible(item):
             continue
+        content = strip_internal_report_contract(str(item.get("content") or ""))
+        request_id = str(item.get("requestId") or "")
+        base_request_id = request_id.removeprefix("silence-")
+        normalized_content = " ".join(content.split())
+        if request_id.startswith("silence-") and normalized_content in seen_content_by_base_request.get(base_request_id, set()):
+            # Auto silence nudge can race with the original turn and receive the
+            # exact same assistant reply. Keep the audit trail in storage, but
+            # do not show duplicate bubbles in the operator chat.
+            continue
+        if base_request_id:
+            seen_content_by_base_request.setdefault(base_request_id, set()).add(normalized_content)
         if "[관제 보고 규칙]" in str(item.get("content") or ""):
-            item = {**item, "content": strip_internal_report_contract(str(item.get("content") or ""))}
+            item = {**item, "content": content}
         visible.append(item)
     return {"ok": True, "agentId": agent_id, "messages": visible[-80:]}
 
