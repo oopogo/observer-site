@@ -1759,6 +1759,7 @@
             </div>
             <div class="ops-row">
               <button class="recover-button" type="button" id="detailButton">로그</button>
+              <button class="recover-button" type="button" id="wakeCheckButton">깨우기/회수</button>
               <button class="recover-button" type="button" id="newSessionButton">새 세션</button>
               <button class="recover-button" type="button" id="manageButton">관리</button>
             </div>
@@ -2839,6 +2840,19 @@
           }
         } catch (error) {
           sessionDetail.textContent = `세션 상세 조회 실패: ${error}`;
+        }
+      });
+
+      wakeCheckButton.addEventListener('click', async () => {
+        if (!selectedAgent) return;
+        appendSystemMessage('수동 깨우기/회수 점검을 요청하는 중입니다...');
+        try {
+          const payload = await postAgentAction('/api/agent/force-check', wakeCheckButton, '요청 중', '깨우기 실패');
+          if (payload) appendSystemMessage(`깨우기/회수 점검 요청 완료: ${payload.sessionKey || '-'}`);
+          await refreshOpenChatHistory(selectedAgent, ++chatRequestSeq);
+          await loadAgents();
+        } catch (error) {
+          appendSystemMessage(`깨우기/회수 점검 실패: ${error}`);
         }
       });
 

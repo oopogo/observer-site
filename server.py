@@ -1348,6 +1348,24 @@ def send_silence_nudge(agent_id: str, request_id: str | None = None) -> None:
     complete_chat_async(agent_id, agent["name"], session_key, message, nudge_request_id)
 
 
+def send_force_check(agent_id: str) -> dict[str, Any]:
+    agent = next((a for a in AGENTS if a["id"] == agent_id), None)
+    if not agent:
+        raise ValueError("허용되지 않은 에이전트입니다.")
+    session_key = observer_chat_session_key(agent_id)
+    request_id = f"force-check-{uuid.uuid4()}"
+    append_history(agent_id, "system", "시스템: 수동 깨우기 · activeWork/하네스 회수 점검 요청 중", {"status": "pending", "pending": True, "manualWake": True, "sessionKey": session_key, "requestId": request_id})
+    message = (
+        "관제 웹에서 수동 깨우기/회수 점검을 요청했습니다. "
+        "먼저 activeWork, 실행 중인 subagent/background process, 최근 로그, git status를 실제 확인하세요. "
+        "하네스/자율 작업이 completed인데 관제 webchat 최종 보고가 없으면 새 작업을 시작하지 말고 누락 보고를 복구하세요. "
+        "보고에는 현재 단계, 완료한 것, 검증/QA/외부 링크 또는 artifact, 커밋, 남은 실패/차단, 다음 행동을 포함하세요. "
+        "Gateway/systemd/live config는 건드리지 마세요. 이 요청에는 반드시 사용자에게 보이는 자연어 답변으로 응답하세요."
+    )
+    threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, message, request_id), daemon=True).start()
+    return {"ok": True, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "requestId": request_id, "history": load_history().get(agent_id, [])[-80:]}
+
+
 def maybe_auto_nudge(agent: dict[str, Any]) -> None:
     agent_id = str(agent.get("id") or "")
     if not agent_id:
@@ -2372,6 +2390,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/recover":
                 result = send_recovery_nudge(agent_id)
+                self.json_response(result)
+                return
+            if path == "/api/agent/force-check":
+                result = send_force_check(agent_id)
                 self.json_response(result)
                 return
             if path == "/api/agent/session-detail":
