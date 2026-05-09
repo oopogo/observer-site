@@ -180,6 +180,21 @@
         white-space: nowrap;
       }
 
+      .ops-alerts {
+        display: none;
+        border: 1px solid rgba(239, 68, 68, 0.42);
+        background: rgba(127, 29, 29, 0.24);
+        border-radius: 18px;
+        padding: 10px 12px;
+        margin: -4px 0 14px;
+        color: var(--text);
+      }
+
+      .ops-alerts.open { display: block; }
+      .ops-alerts strong { color: #fecaca; }
+      .ops-alerts ul { margin: 8px 0 0; padding-left: 18px; }
+      .ops-alerts li { margin: 4px 0; color: var(--muted); font-size: 12px; }
+
       .board {
         position: relative;
         display: grid;
@@ -1671,6 +1686,8 @@
         <div class="metric"><strong id="countSilence">-</strong><span>무음 경고</span></div>
       </section>
 
+      <section class="ops-alerts" id="opsAlerts" aria-live="polite"></section>
+
       <section class="board" aria-label="에이전트 상태 보드">
         <div class="flow" aria-hidden="true"><span class="runner"></span></div>
 
@@ -2471,7 +2488,22 @@
         renderMultiChatAgentList();
       }
 
+      function renderOpsAlerts(payload) {
+        const box = document.getElementById('opsAlerts');
+        if (!box) return;
+        const ops = payload.opsAlerts || {};
+        const alerts = ops.alerts || [];
+        box.classList.toggle('open', alerts.length > 0);
+        if (!alerts.length) {
+          box.innerHTML = '';
+          return;
+        }
+        const top = alerts.slice(0, 5).map((item) => `<li><strong>${escapeHtml(item.title || item.kind || '경고')}</strong> — ${escapeHtml(item.detail || '')}</li>`).join('');
+        box.innerHTML = `<strong>운영 경고 ${ops.critical || 0} critical / ${ops.warning || 0} warning</strong><ul>${top}</ul>`;
+      }
+
       function renderAgents(payload) {
+        renderOpsAlerts(payload);
         const agents = payload.agents || [];
         latestAgents = agents;
         const idleCount = agents.filter((a) => a.state === 'idle').length;

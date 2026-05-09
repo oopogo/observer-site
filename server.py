@@ -33,6 +33,8 @@ ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 WORK_STATE_PATH = DATA_DIR / "work-state.json"
 SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
+MYLENE_HEARTBEAT_STATE_PATH = Path("/home/oopogo/.openclaw/workspace/memory/heartbeat-state.json")
+ROGUELIKE_ROOT = Path("/mnt/c/MegaGrit/RogueLike_001")
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
@@ -2004,6 +2006,97 @@ def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: 
     return {"ts": evidence_ts, "reason": reason, "lastReportTs": last_report_ts}
 
 
+def load_mylene_active_work() -> dict[str, Any] | None:
+    try:
+        data = json.loads(MYLENE_HEARTBEAT_STATE_PATH.read_text())
+        active = data.get("activeWork") if isinstance(data, dict) else None
+        return active if isinstance(active, dict) else None
+    except Exception:
+        return None
+
+
+def tail_text(path: str, max_bytes: int = 12_000) -> str:
+    try:
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return ""
+        with p.open("rb") as fh:
+            try:
+                fh.seek(max(0, p.stat().st_size - max_bytes))
+            except Exception:
+                pass
+            return fh.read(max_bytes).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def process_matches_hint(hint: str) -> bool:
+    if not hint:
+        return False
+    try:
+        result = subprocess.run(["pgrep", "-af", hint], capture_output=True, text=True, timeout=2)
+        return result.returncode == 0 and bool((result.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def cpu_hog_alerts() -> list[dict[str, Any]]:
+    try:
+        result = subprocess.run(["ps", "-eo", "pid,etimes,pcpu,pmem,comm,args", "--sort=-pcpu"], capture_output=True, text=True, timeout=3)
+    except Exception:
+        return []
+    alerts: list[dict[str, Any]] = []
+    for line in (result.stdout or "").splitlines()[1:12]:
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        pid, etimes, cpu, mem, comm, args = parts
+        try:
+            cpu_f = float(cpu)
+            age_s = int(float(etimes))
+        except Exception:
+            continue
+        if cpu_f < 120:
+            continue
+        if not any(token in args for token in ["chrome-headless", "playwright", "qa-", "vite", "openclaw-gateway"]):
+            continue
+        alerts.append({"kind": "cpu-hog", "severity": "warning" if cpu_f < 250 else "critical", "title": f"CPU 폭주 후보 {comm} {cpu_f:.0f}%", "detail": f"pid={pid} age={age_s}s mem={mem}% cmd={args[:180]}", "pid": pid, "cpu": cpu_f})
+    return alerts
+
+
+def active_work_alerts() -> list[dict[str, Any]]:
+    active = load_mylene_active_work()
+    if not active:
+        return []
+    alerts: list[dict[str, Any]] = []
+    status = str(active.get("status") or "")
+    title = str(active.get("title") or active.get("id") or "activeWork")
+    units = active.get("executionUnits") if isinstance(active.get("executionUnits"), list) else []
+    running_units = [u for u in units if isinstance(u, dict) and u.get("status") == "running"]
+    for unit in running_units:
+        log = str(unit.get("log") or "")
+        command = str(unit.get("command") or "")
+        pid = str(unit.get("pid") or "")
+        alive = bool(pid and Path(f"/proc/{pid}").exists()) or process_matches_hint(command[:80])
+        if not alive:
+            alerts.append({"kind": "active-work-orphan", "severity": "critical", "title": "activeWork running인데 실행 단위가 안 보임", "detail": f"{title} · unit={unit.get('label') or unit.get('type')} · log={log or '-'}"})
+        text = tail_text(log) if log else ""
+        lowered = text.lower()
+        if text and any(key in lowered for key in ["qa_report_artifacts=1", "publication_semantic=2", "semantic_static=2", "error:", "traceback"]):
+            alerts.append({"kind": "active-work-log-failure", "severity": "critical", "title": "activeWork 로그 실패 감지", "detail": f"{title} · {unit.get('label') or unit.get('type')} · {log}"})
+    if status == "completed":
+        last_report = str(active.get("lastUserReportAt") or "")
+        completed = str(active.get("completedAt") or "")
+        if completed and (not last_report or last_report < completed):
+            alerts.append({"kind": "completed-report-missing", "severity": "critical", "title": "completed 후 사용자 보고 누락 가능", "detail": f"{title} · completedAt={completed} · lastUserReportAt={last_report or '-'}"})
+    return alerts
+
+
+def summarize_ops_alerts() -> dict[str, Any]:
+    alerts = (active_work_alerts() + cpu_hog_alerts())[:12]
+    return {"total": len(alerts), "critical": sum(1 for a in alerts if a.get("severity") == "critical"), "warning": sum(1 for a in alerts if a.get("severity") == "warning"), "alerts": alerts}
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sanitize_internal_report_contract_messages()
@@ -2161,10 +2254,12 @@ def summarize_agents() -> dict[str, Any]:
         output.append(agent_payload)
         maybe_auto_nudge(agent_payload)
 
+    ops_alerts = summarize_ops_alerts()
     return {
         "ok": True,
         "generatedAt": int(time.time() * 1000),
         "agents": output,
+        "opsAlerts": ops_alerts,
         "counts": {
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),
