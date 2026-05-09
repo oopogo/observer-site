@@ -2060,6 +2060,10 @@ def cpu_hog_alerts() -> list[dict[str, Any]]:
             continue
         if not any(token in args for token in ["chrome-headless", "playwright", "qa-", "vite", "openclaw-gateway"]):
             continue
+        if "openclaw-gateway" in args and age_s < 30 and cpu_f < 220:
+            continue
+        if "openclaw-gateway" not in args and not any(token in args for token in ["chrome-headless", "playwright", "qa-", "vite"]):
+            continue
         alerts.append({"kind": "cpu-hog", "severity": "warning" if cpu_f < 250 else "critical", "title": f"CPU 폭주 후보 {comm} {cpu_f:.0f}%", "detail": f"pid={pid} age={age_s}s mem={mem}% cmd={args[:180]}", "pid": pid, "cpu": cpu_f})
     return alerts
 
