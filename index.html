@@ -2555,8 +2555,11 @@
           `agents ${summary.agents ?? '-'}`,
           `working ${summary.working ?? '-'}`,
           `reporting ${summary.reporting ?? '-'}`,
+          `report missing ${summary.reportMissing ?? 0}`,
+          `done/no report ${summary.completedReportMissing ?? 0}`,
           `ops ${summary.opsCritical ?? 0}/${summary.opsWarning ?? 0}`,
           `ACP ${summary.acpActive ?? 0} active / ${summary.acpStale ?? 0} stale`,
+          `ACP recover ${summary.acpNeedsRecovery ?? 0}`,
         ].map((text) => `<span class="mcp-pill">${escapeHtml(text)}</span>`).join('');
         box.innerHTML = `<strong>MCP status · ${escapeHtml(mcp.schema || '')}</strong><div class="mcp-grid">${pills}</div>`;
       }

@@ -2243,11 +2243,19 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
                 "path": str(path),
             })
     rows.sort(key=lambda item: int(item.get("updatedAt") or 0), reverse=True)
-    return {
-        "total": len(rows),
-        "active": sum(1 for r in rows if r.get("state") == "running"),
+    lifecycle = {
+        "running": sum(1 for r in rows if r.get("state") == "running"),
         "stale": sum(1 for r in rows if r.get("state") == "stale"),
         "closed": sum(1 for r in rows if r.get("state") == "closed"),
+        "needsRecovery": sum(1 for r in rows if r.get("state") in {"running", "stale"}),
+        "needsReportCheck": sum(1 for r in rows if r.get("state") == "closed" and int(r.get("messageCount") or 0) > 0),
+    }
+    return {
+        "total": len(rows),
+        "active": lifecycle["running"],
+        "stale": lifecycle["stale"],
+        "closed": lifecycle["closed"],
+        "lifecycle": lifecycle,
         "sessions": rows[:limit],
     }
 
@@ -2296,6 +2304,10 @@ def build_mcp_status_context(
             },
             "git": agent.get("git") if isinstance(agent.get("git"), dict) else None,
         })
+    lifecycle = acp_sessions.get("lifecycle") if isinstance(acp_sessions.get("lifecycle"), dict) else {}
+    report_missing = sum(1 for a in agent_rows if a.get("reportDebt"))
+    silence_warning = sum(1 for a in agent_rows if a.get("needsSilenceReport"))
+    completed_report_missing = sum(1 for alert in ops_alerts.get("alerts", []) if isinstance(alert, dict) and alert.get("kind") == "completed-report-missing")
     return {
         "schema": "observer.mcp.status.v1",
         "tool": "observer.status.snapshot",
@@ -2305,10 +2317,15 @@ def build_mcp_status_context(
             "working": sum(1 for a in agent_rows if a.get("state") == "working"),
             "assigned": sum(1 for a in agent_rows if a.get("state") == "assigned"),
             "reporting": sum(1 for a in agent_rows if a.get("state") == "reporting"),
+            "reportMissing": report_missing,
+            "completedReportMissing": completed_report_missing,
+            "silenceWarning": silence_warning,
             "opsCritical": int(ops_alerts.get("critical") or 0),
             "opsWarning": int(ops_alerts.get("warning") or 0),
             "acpActive": int(acp_sessions.get("active") or 0),
             "acpStale": int(acp_sessions.get("stale") or 0),
+            "acpNeedsRecovery": int(lifecycle.get("needsRecovery") or 0),
+            "acpNeedsReportCheck": int(lifecycle.get("needsReportCheck") or 0),
         },
         "agents": agent_rows,
         "opsAlerts": ops_alerts,
