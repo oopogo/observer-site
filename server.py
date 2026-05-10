@@ -2252,6 +2252,119 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
     }
 
 
+def acp_session_paths() -> list[Path]:
+    paths: list[Path] = []
+    for directory in ACP_SESSION_DIRS:
+        if directory.exists():
+            paths.extend(directory.glob("*acp*.json"))
+    return paths
+
+
+def find_acp_session(record_id: str) -> tuple[Path, dict[str, Any]]:
+    wanted = str(record_id or "").strip()
+    if not wanted:
+        raise ValueError("ACP recordId가 필요합니다.")
+    for path in acp_session_paths():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+        rid = str(data.get("acpx_record_id") or path.stem)
+        sid = str(data.get("acp_session_id") or "")
+        if wanted in {rid, sid, path.name, path.stem}:
+            return path, data
+    raise ValueError("ACP 세션을 찾지 못했습니다.")
+
+
+def acp_message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return str(message)[:1000]
+    parts: list[str] = []
+    for role_key in ("User", "Agent", "System"):
+        block = message.get(role_key)
+        if not isinstance(block, dict):
+            continue
+        for item in block.get("content") or []:
+            if isinstance(item, dict) and isinstance(item.get("Text"), str):
+                parts.append(f"{role_key}: {item.get('Text')}")
+    return "\n".join(parts).strip()[:2000]
+
+
+def read_acp_stream_tail(data: dict[str, Any], max_chars: int = 4000) -> str:
+    event_log = data.get("event_log") if isinstance(data.get("event_log"), dict) else {}
+    path = Path(str(event_log.get("active_path") or ""))
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        raw = path.read_bytes()[-max_chars:]
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def acp_session_detail(record_id: str) -> dict[str, Any]:
+    path, data = find_acp_session(record_id)
+    raw_pid = data.get("pid")
+    pid = int(raw_pid) if str(raw_pid or "").isdigit() else 0
+    messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+    return {
+        "ok": True,
+        "recordId": str(data.get("acpx_record_id") or path.stem),
+        "sessionId": str(data.get("acp_session_id") or ""),
+        "path": str(path),
+        "cwd": str(data.get("cwd") or ""),
+        "command": str(data.get("agent_command") or ""),
+        "pid": pid or None,
+        "pidAlive": bool(pid and Path(f"/proc/{pid}").exists()),
+        "closed": bool(data.get("closed") or data.get("closed_at")),
+        "closedAt": data.get("closed_at"),
+        "createdAt": parse_iso_ms(data.get("created_at")),
+        "updatedAt": parse_iso_ms(data.get("updated_at") or data.get("last_used_at") or data.get("created_at")),
+        "messageCount": len(messages),
+        "messages": [acp_message_text(m) for m in messages[-6:]],
+        "streamTail": read_acp_stream_tail(data),
+        "tokenUsage": data.get("cumulative_token_usage") or data.get("request_token_usage") or {},
+    }
+
+
+def recover_acp_session(record_id: str) -> dict[str, Any]:
+    detail = acp_session_detail(record_id)
+    summary_lines = [
+        f"ACP 회수: {detail.get('recordId')}",
+        f"- 상태: pidAlive={detail.get('pidAlive')} closed={detail.get('closed')}",
+        f"- cwd: {detail.get('cwd') or '-'}",
+        f"- command: {detail.get('command') or '-'}",
+        f"- messages: {detail.get('messageCount')}",
+    ]
+    messages = detail.get("messages") or []
+    if messages:
+        summary_lines.append("- 최근 메시지:")
+        for msg in messages[-3:]:
+            summary_lines.append("  - " + compact_report_line(str(msg).replace("\n", " "), 220))
+    tail = str(detail.get("streamTail") or "").strip()
+    if tail:
+        summary_lines.append("- stream tail: " + compact_report_line(tail.replace("\n", " "), 260))
+    return {"ok": True, "detail": detail, "summary": "\n".join(summary_lines)}
+
+
+def abort_acp_session(record_id: str) -> dict[str, Any]:
+    path, data = find_acp_session(record_id)
+    raw_pid = data.get("pid")
+    pid = int(raw_pid) if str(raw_pid or "").isdigit() else 0
+    killed = False
+    if pid and Path(f"/proc/{pid}").exists():
+        os.kill(pid, 15)
+        killed = True
+    data["closed"] = True
+    data["closed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    data.setdefault("acpx", {})
+    if isinstance(data.get("acpx"), dict):
+        data["acpx"]["closedByObserverSite"] = True
+        data["acpx"]["closedReason"] = "manual abort"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    return {"ok": True, "killed": killed, "recordId": str(data.get("acpx_record_id") or path.stem), "acpSessions": summarize_acp_sessions()}
+
+
 def cleanup_stale_acp_sessions() -> dict[str, Any]:
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     closed: list[str] = []
@@ -2729,6 +2842,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/acp/spawn":
                 result = spawn_acp_task(data)
+                self.json_response(result)
+                return
+            if path == "/api/acp/detail":
+                result = acp_session_detail(str(data.get("recordId") or data.get("sessionId") or ""))
+                self.json_response(result)
+                return
+            if path == "/api/acp/recover":
+                result = recover_acp_session(str(data.get("recordId") or data.get("sessionId") or ""))
+                self.json_response(result)
+                return
+            if path == "/api/acp/abort":
+                result = abort_acp_session(str(data.get("recordId") or data.get("sessionId") or ""))
                 self.json_response(result)
                 return
             if path == "/api/observer/self-work/register":

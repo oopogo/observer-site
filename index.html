@@ -2541,12 +2541,42 @@
           const cmd = escapeHtml(item.command || '');
           const cwd = item.cwd ? ` · ${escapeHtml(item.cwd)}` : '';
           const pid = item.pid ? ` · pid ${escapeHtml(item.pid)}` : '';
-          return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}</li>`;
+          const record = escapeHtml(item.recordId || item.sessionId || '');
+          return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
         }).join('');
         box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">stale 정리</button></div>`;
       }
 
-      async function postAcpAction(action) {
+      async function postAcpAction(action, recordId = '') {
+        if (action === 'detail' || action === 'recover' || action === 'abort') {
+          if (!recordId) return;
+          if (action === 'abort' && !window.confirm('이 ACP 세션을 중단/closed 처리할까요?')) return;
+          const endpoint = action === 'detail' ? '/api/acp/detail' : (action === 'recover' ? '/api/acp/recover' : '/api/acp/abort');
+          const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordId }) });
+          const payload = await res.json();
+          if (!payload.ok) {
+            appendSystemMessage(`ACP ${action} 실패: ${payload.error || res.status}`);
+          } else if (action === 'recover') {
+            appendSystemMessage(payload.summary || 'ACP 회수 완료');
+          } else if (action === 'abort') {
+            appendSystemMessage(`ACP 중단 처리 완료: killed=${payload.killed ? 'yes' : 'no'}`);
+          } else {
+            const messages = (payload.messages || []).join('
+---
+');
+            const tail = payload.streamTail ? `
+stream tail:
+${payload.streamTail}` : '';
+            appendSystemMessage(`ACP 상세
+record: ${payload.recordId}
+state: pidAlive=${payload.pidAlive} closed=${payload.closed}
+cwd: ${payload.cwd || '-'}
+messages: ${payload.messageCount || 0}
+${messages}${tail}`.slice(0, 3500));
+          }
+          await loadAgents();
+          return;
+        }
         if (action === 'cleanup') {
           if (!window.confirm('실행 중 PID가 없는 stale ACP 세션을 closed로 정리할까요?')) return;
           const res = await fetch('/api/acp/cleanup-stale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
@@ -2659,7 +2689,7 @@
         const button = event.target && event.target.closest ? event.target.closest('[data-acp-action]') : null;
         if (!button) return;
         event.preventDefault();
-        postAcpAction(button.dataset.acpAction).catch((error) => appendSystemMessage(`ACP 작업 실패: ${error}`));
+        postAcpAction(button.dataset.acpAction, button.dataset.recordId || '').catch((error) => appendSystemMessage(`ACP 작업 실패: ${error}`));
       });
 
       async function loadAgents() {
