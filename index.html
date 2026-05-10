@@ -212,6 +212,9 @@
       .acp-state-running { color: #86efac; }
       .acp-state-stale { color: #fcd34d; }
       .acp-state-closed { color: #94a3b8; }
+      .acp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      .acp-actions button { border: 1px solid rgba(147, 197, 253, 0.35); background: rgba(30, 64, 175, 0.28); color: var(--text); border-radius: 999px; padding: 7px 10px; cursor: pointer; font-size: 12px; }
+      .acp-actions button:hover { background: rgba(37, 99, 235, 0.38); }
 
       .board {
         position: relative;
@@ -2540,7 +2543,31 @@
           const pid = item.pid ? ` · pid ${escapeHtml(item.pid)}` : '';
           return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}</li>`;
         }).join('');
-        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul>`;
+        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">stale 정리</button></div>`;
+      }
+
+      async function postAcpAction(action) {
+        if (action === 'cleanup') {
+          if (!window.confirm('실행 중 PID가 없는 stale ACP 세션을 closed로 정리할까요?')) return;
+          const res = await fetch('/api/acp/cleanup-stale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+          const payload = await res.json();
+          appendSystemMessage(payload.ok ? `ACP stale ${payload.closed || 0}개 정리 완료` : `ACP stale 정리 실패: ${payload.error || res.status}`);
+          await loadAgents();
+          return;
+        }
+        const task = window.prompt('ACP 작업 지시를 입력하세요.');
+        if (!task || !task.trim()) return;
+        const label = window.prompt('작업 라벨', 'observer-acp-task') || 'observer-acp-task';
+        const acpAgentId = window.prompt('ACP agent id', 'codex') || 'codex';
+        const cwd = window.prompt('작업 디렉터리', '/mnt/c/MegaGrit/RogueLike_001') || '/mnt/c/MegaGrit/RogueLike_001';
+        const res = await fetch('/api/acp/spawn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task, label, acpAgentId, cwd, mode: 'session' }),
+        });
+        const payload = await res.json();
+        appendSystemMessage(payload.ok ? 'ACP 작업 시작 요청 완료' : `ACP 작업 시작 실패: ${payload.error || res.status}`);
+        await loadAgents();
       }
 
       function renderAgents(payload) {
@@ -2626,6 +2653,14 @@
         void runner.offsetWidth;
         runner.style.animation = `travel ${durationMs}ms linear 1 forwards`;
       }
+
+
+      document.addEventListener('click', (event) => {
+        const button = event.target && event.target.closest ? event.target.closest('[data-acp-action]') : null;
+        if (!button) return;
+        event.preventDefault();
+        postAcpAction(button.dataset.acpAction).catch((error) => appendSystemMessage(`ACP 작업 실패: ${error}`));
+      });
 
       async function loadAgents() {
         if (agentsLoading) return;

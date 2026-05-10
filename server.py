@@ -2252,6 +2252,57 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
     }
 
 
+def cleanup_stale_acp_sessions() -> dict[str, Any]:
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    closed: list[str] = []
+    for directory in ACP_SESSION_DIRS:
+        if not directory.exists():
+            continue
+        for path in directory.glob("*acp*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                continue
+            if data.get("schema") != "acpx.session.v1" and "acp_session_id" not in data:
+                continue
+            raw_pid = data.get("pid")
+            pid = int(raw_pid) if str(raw_pid or "").isdigit() else 0
+            pid_alive = bool(pid and Path(f"/proc/{pid}").exists())
+            already_closed = bool(data.get("closed") or data.get("closed_at"))
+            if pid_alive or already_closed:
+                continue
+            data["closed"] = True
+            data["closed_at"] = now_iso
+            data.setdefault("acpx", {})
+            if isinstance(data.get("acpx"), dict):
+                data["acpx"]["closedByObserverSite"] = True
+                data["acpx"]["closedReason"] = "stale pid missing"
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            closed.append(str(path))
+    return {"ok": True, "closed": len(closed), "paths": closed[:20], "acpSessions": summarize_acp_sessions()}
+
+
+def spawn_acp_task(data: dict[str, Any]) -> dict[str, Any]:
+    task = str(data.get("task") or "").strip()
+    if not task:
+        raise ValueError("ACP 작업 내용을 입력하세요.")
+    target_agent = str(data.get("acpAgentId") or data.get("targetAgent") or "codex").strip() or "codex"
+    cwd = str(data.get("cwd") or "/mnt/c/MegaGrit/RogueLike_001").strip()
+    label = str(data.get("label") or "observer-acp-task").strip()[:80] or "observer-acp-task"
+    mode = str(data.get("mode") or "session").strip()
+    params = {
+        "task": task,
+        "runtime": "acp",
+        "agentId": target_agent,
+        "cwd": cwd,
+        "mode": mode if mode in {"run", "session"} else "session",
+        "thread": False,
+        "label": label,
+    }
+    result = gateway_call("sessions.spawn", params, timeout=30)
+    return {"ok": True, "params": params, "result": result, "acpSessions": summarize_acp_sessions()}
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sanitize_internal_report_contract_messages()
@@ -2670,6 +2721,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/agent/settings":
                 result = save_single_agent_setting(agent_id, data.get("displayName"), data.get("avatar"))
+                self.json_response(result)
+                return
+            if path == "/api/acp/cleanup-stale":
+                result = cleanup_stale_acp_sessions()
+                self.json_response(result)
+                return
+            if path == "/api/acp/spawn":
+                result = spawn_acp_task(data)
                 self.json_response(result)
                 return
             if path == "/api/observer/self-work/register":
