@@ -2252,6 +2252,60 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
     }
 
 
+def build_mcp_status_context(
+    agents: list[dict[str, Any]],
+    acp_sessions: dict[str, Any],
+    ops_alerts: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a stable MCP-style tool result for observer status consumers.
+
+    This is intentionally shaped as a tool envelope rather than a UI payload so
+    the web API, future MCP server, and ACP agents can share the same contract.
+    """
+    agent_rows: list[dict[str, Any]] = []
+    for agent in agents:
+        active_work = agent.get("activeWork") if isinstance(agent.get("activeWork"), dict) else None
+        subagents = agent.get("subagents") if isinstance(agent.get("subagents"), dict) else {}
+        agent_rows.append({
+            "id": str(agent.get("id") or ""),
+            "name": str(agent.get("name") or agent.get("id") or ""),
+            "state": str(agent.get("state") or "idle"),
+            "statusText": str(agent.get("statusText") or ""),
+            "detail": str(agent.get("detail") or ""),
+            "latestSessionKey": agent.get("latestSessionKey"),
+            "chatSessionKey": agent.get("chatSessionKey"),
+            "activeWorkId": active_work.get("id") if active_work else None,
+            "activeWorkTitle": active_work.get("title") if active_work else None,
+            "activeWorkStatus": active_work.get("status") if active_work else None,
+            "reportDebt": agent.get("reportDebt") if isinstance(agent.get("reportDebt"), dict) else None,
+            "needsSilenceReport": bool(agent.get("needsSilenceReport")),
+            "subagents": {
+                "active": int(subagents.get("active") or 0) if isinstance(subagents, dict) else 0,
+                "stale": int(subagents.get("stale") or 0) if isinstance(subagents, dict) else 0,
+                "total": int(subagents.get("total") or 0) if isinstance(subagents, dict) else 0,
+            },
+            "git": agent.get("git") if isinstance(agent.get("git"), dict) else None,
+        })
+    return {
+        "schema": "observer.mcp.status.v1",
+        "tool": "observer.status.snapshot",
+        "generatedAt": int(time.time() * 1000),
+        "summary": {
+            "agents": len(agent_rows),
+            "working": sum(1 for a in agent_rows if a.get("state") == "working"),
+            "assigned": sum(1 for a in agent_rows if a.get("state") == "assigned"),
+            "reporting": sum(1 for a in agent_rows if a.get("state") == "reporting"),
+            "opsCritical": int(ops_alerts.get("critical") or 0),
+            "opsWarning": int(ops_alerts.get("warning") or 0),
+            "acpActive": int(acp_sessions.get("active") or 0),
+            "acpStale": int(acp_sessions.get("stale") or 0),
+        },
+        "agents": agent_rows,
+        "opsAlerts": ops_alerts,
+        "acpSessions": acp_sessions,
+    }
+
+
 def acp_session_paths() -> list[Path]:
     paths: list[Path] = []
     for directory in ACP_SESSION_DIRS:
@@ -2582,12 +2636,15 @@ def summarize_agents() -> dict[str, Any]:
         maybe_auto_nudge(agent_payload)
 
     ops_alerts = summarize_ops_alerts()
+    acp_sessions = summarize_acp_sessions()
+    mcp_status = build_mcp_status_context(output, acp_sessions, ops_alerts)
     return {
         "ok": True,
         "generatedAt": int(time.time() * 1000),
         "agents": output,
         "opsAlerts": ops_alerts,
-        "acpSessions": summarize_acp_sessions(),
+        "acpSessions": acp_sessions,
+        "mcp": mcp_status,
         "counts": {
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),
@@ -2780,6 +2837,21 @@ class Handler(SimpleHTTPRequestHandler):
                     self.json_response(payload, 502)
                     return
             self.json_response(payload)
+            return
+        if path == "/api/mcp/status":
+            cached = cache_get("agents")
+            if cache_is_fresh(cached) and isinstance(cached.get("mcp"), dict):
+                self.json_response({"ok": True, "mcp": cached.get("mcp")})
+                return
+            try:
+                payload = cache_set("agents", summarize_agents())
+                self.json_response({"ok": True, "mcp": payload.get("mcp")})
+            except Exception as exc:
+                payload = stale_payload("agents", exc)
+                if payload and isinstance(payload.get("mcp"), dict):
+                    self.json_response({"ok": True, "stale": True, "warning": payload.get("warning"), "mcp": payload.get("mcp")})
+                else:
+                    self.json_response({"ok": False, "error": str(exc)}, 502)
             return
         if path == "/api/observer/self-work":
             self.json_response({"ok": True, "state": load_self_work_state(), "active": active_self_work_item()})
