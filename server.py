@@ -34,6 +34,10 @@ REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 WORK_STATE_PATH = DATA_DIR / "work-state.json"
 SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
 MYLENE_HEARTBEAT_STATE_PATH = Path("/home/oopogo/.openclaw/workspace/memory/heartbeat-state.json")
+ACP_SESSION_DIRS = [
+    Path("/home/oopogo/.openclaw/workspace/state/sessions"),
+    Path("/home/oopogo/.openclaw/workspace-observer/state/sessions"),
+]
 ROGUELIKE_ROOT = Path("/mnt/c/MegaGrit/RogueLike_001")
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
 AGENTS = [
@@ -2186,6 +2190,68 @@ def is_nonblocking_maintenance_session(session: dict[str, Any]) -> bool:
     return False
 
 
+def parse_iso_ms(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for directory in ACP_SESSION_DIRS:
+        if not directory.exists():
+            continue
+        for path in directory.glob("*acp*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                continue
+            if data.get("schema") != "acpx.session.v1" and "acp_session_id" not in data:
+                continue
+            record_id = str(data.get("acpx_record_id") or path.stem)
+            if record_id in seen:
+                continue
+            seen.add(record_id)
+            raw_pid = data.get("pid")
+            pid = int(raw_pid) if str(raw_pid or "").isdigit() else 0
+            pid_alive = bool(pid and Path(f"/proc/{pid}").exists())
+            closed = bool(data.get("closed") or data.get("closed_at"))
+            updated_ms = parse_iso_ms(data.get("updated_at") or data.get("last_used_at") or data.get("created_at"))
+            created_ms = parse_iso_ms(data.get("created_at"))
+            messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+            title = str(data.get("title") or record_id.split(":")[-1])
+            command = str(data.get("agent_command") or "")
+            rows.append({
+                "recordId": record_id,
+                "sessionId": str(data.get("acp_session_id") or ""),
+                "title": title[:160],
+                "command": command[:180],
+                "cwd": str(data.get("cwd") or "")[:220],
+                "pid": pid or None,
+                "pidAlive": pid_alive,
+                "closed": closed,
+                "state": "running" if pid_alive and not closed else ("closed" if closed else "stale"),
+                "createdAt": created_ms,
+                "updatedAt": updated_ms or created_ms,
+                "messageCount": len(messages),
+                "path": str(path),
+            })
+    rows.sort(key=lambda item: int(item.get("updatedAt") or 0), reverse=True)
+    return {
+        "total": len(rows),
+        "active": sum(1 for r in rows if r.get("state") == "running"),
+        "stale": sum(1 for r in rows if r.get("state") == "stale"),
+        "closed": sum(1 for r in rows if r.get("state") == "closed"),
+        "sessions": rows[:limit],
+    }
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sanitize_internal_report_contract_messages()
@@ -2350,6 +2416,7 @@ def summarize_agents() -> dict[str, Any]:
         "generatedAt": int(time.time() * 1000),
         "agents": output,
         "opsAlerts": ops_alerts,
+        "acpSessions": summarize_acp_sessions(),
         "counts": {
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),

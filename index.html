@@ -195,6 +195,24 @@
       .ops-alerts ul { margin: 8px 0 0; padding-left: 18px; }
       .ops-alerts li { margin: 4px 0; color: var(--muted); font-size: 12px; }
 
+      .acp-panel {
+        display: none;
+        border: 1px solid rgba(96, 165, 250, 0.34);
+        background: rgba(15, 23, 42, 0.58);
+        border-radius: 18px;
+        padding: 10px 12px;
+        margin: -4px 0 14px;
+        color: var(--text);
+      }
+
+      .acp-panel.open { display: block; }
+      .acp-panel strong { color: #bfdbfe; }
+      .acp-panel ul { margin: 8px 0 0; padding-left: 18px; }
+      .acp-panel li { margin: 4px 0; color: var(--muted); font-size: 12px; }
+      .acp-state-running { color: #86efac; }
+      .acp-state-stale { color: #fcd34d; }
+      .acp-state-closed { color: #94a3b8; }
+
       .board {
         position: relative;
         display: grid;
@@ -1687,6 +1705,7 @@
       </section>
 
       <section class="ops-alerts" id="opsAlerts" aria-live="polite"></section>
+      <section class="acp-panel" id="acpPanel" aria-live="polite"></section>
 
       <section class="board" aria-label="에이전트 상태 보드">
         <div class="flow" aria-hidden="true"><span class="runner"></span></div>
@@ -2502,8 +2521,31 @@
         box.innerHTML = `<strong>운영 경고 ${ops.critical || 0} critical / ${ops.warning || 0} warning</strong><ul>${top}</ul>`;
       }
 
+
+      function renderAcpSessions(payload) {
+        const box = document.getElementById('acpPanel');
+        if (!box) return;
+        const acp = payload.acpSessions || {};
+        const sessions = acp.sessions || [];
+        box.classList.toggle('open', (acp.total || 0) > 0);
+        if (!(acp.total || 0)) {
+          box.innerHTML = '';
+          return;
+        }
+        const top = sessions.slice(0, 5).map((item) => {
+          const state = escapeHtml(item.state || 'unknown');
+          const title = escapeHtml(item.title || item.sessionId || item.recordId || 'ACP session');
+          const cmd = escapeHtml(item.command || '');
+          const cwd = item.cwd ? ` · ${escapeHtml(item.cwd)}` : '';
+          const pid = item.pid ? ` · pid ${escapeHtml(item.pid)}` : '';
+          return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}</li>`;
+        }).join('');
+        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul>`;
+      }
+
       function renderAgents(payload) {
         renderOpsAlerts(payload);
+        renderAcpSessions(payload);
         const agents = payload.agents || [];
         latestAgents = agents;
         const idleCount = agents.filter((a) => a.state === 'idle').length;
