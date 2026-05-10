@@ -41,6 +41,33 @@ Returns:
 
 `/api/agents` includes the same `mcp` object for UI reuse.
 
+### `POST /mcp` JSON-RPC endpoint
+
+A lightweight HTTP JSON-RPC MCP-compatible endpoint is available at `/mcp`.
+
+Supported methods:
+
+- `initialize`
+- `notifications/initialized`
+- `tools/list`
+- `tools/call`
+
+Example `tools/list`:
+
+```sh
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Example status call:
+
+```sh
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"observer.status.snapshot","arguments":{}}}'
+```
+
 ### ACP tool envelopes
 
 ACP action APIs keep their legacy top-level fields and additionally return `mcpTool`:

@@ -2341,6 +2341,14 @@ def acp_session_paths() -> list[Path]:
     return paths
 
 
+def current_mcp_status_payload() -> dict[str, Any]:
+    cached = cache_get("agents")
+    if cache_is_fresh(cached) and isinstance(cached.get("mcp"), dict):
+        return {"ok": True, "mcp": cached.get("mcp")}
+    payload = cache_set("agents", summarize_agents())
+    return {"ok": True, "mcp": payload.get("mcp")}
+
+
 def find_acp_session(record_id: str) -> tuple[Path, dict[str, Any]]:
     wanted = str(record_id or "").strip()
     if not wanted:
@@ -2803,6 +2811,92 @@ def render_initial_page() -> bytes:
     return html.encode("utf-8")
 
 
+def jsonrpc_success(request_id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def jsonrpc_error(request_id: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
+
+
+def mcp_tool_descriptor(name: str, description: str, properties: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties or {},
+            "required": required or [],
+            "additionalProperties": True,
+        },
+    }
+
+
+def mcp_tools_list() -> dict[str, Any]:
+    record_id_prop = {"recordId": {"type": "string", "description": "ACP recordId/sessionId"}}
+    return {
+        "tools": [
+            mcp_tool_descriptor("observer.status.snapshot", "Return the current observer MCP status snapshot."),
+            mcp_tool_descriptor("observer.acp.detail", "Return ACP session detail.", record_id_prop, ["recordId"]),
+            mcp_tool_descriptor("observer.acp.recover", "Summarize an ACP session for recovery/reporting.", record_id_prop, ["recordId"]),
+            mcp_tool_descriptor("observer.acp.abort", "Mark an ACP session aborted and terminate its pid if alive.", record_id_prop, ["recordId"]),
+            mcp_tool_descriptor("observer.acp.cleanup_stale", "Close ACP sessions whose pid is missing."),
+            mcp_tool_descriptor("observer.acp.spawn", "Queue an ACP spawn request through observer chat.", {
+                "task": {"type": "string"},
+                "label": {"type": "string"},
+                "acpAgentId": {"type": "string"},
+                "cwd": {"type": "string"},
+                "mode": {"type": "string", "enum": ["run", "session"]},
+            }, ["task"]),
+        ]
+    }
+
+
+def mcp_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    args = arguments if isinstance(arguments, dict) else {}
+    if name == "observer.status.snapshot":
+        return current_mcp_status_payload()["mcp"]
+    if name == "observer.acp.detail":
+        return acp_session_detail(str(args.get("recordId") or args.get("sessionId") or "")).get("mcpTool")
+    if name == "observer.acp.recover":
+        return recover_acp_session(str(args.get("recordId") or args.get("sessionId") or "")).get("mcpTool")
+    if name == "observer.acp.abort":
+        return abort_acp_session(str(args.get("recordId") or args.get("sessionId") or "")).get("mcpTool")
+    if name == "observer.acp.cleanup_stale":
+        return cleanup_stale_acp_sessions().get("mcpTool")
+    if name == "observer.acp.spawn":
+        return spawn_acp_task(args).get("mcpTool")
+    raise ValueError(f"unknown MCP tool: {name}")
+
+
+def handle_mcp_jsonrpc(data: dict[str, Any]) -> dict[str, Any] | None:
+    request_id = data.get("id")
+    method = str(data.get("method") or "")
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    try:
+        if method == "initialize":
+            return jsonrpc_success(request_id, {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "observer-site", "version": "0.1.0"},
+                "capabilities": {"tools": {}},
+            })
+        if method == "notifications/initialized":
+            return None
+        if method == "tools/list":
+            return jsonrpc_success(request_id, mcp_tools_list())
+        if method == "tools/call":
+            name = str(params.get("name") or "")
+            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            result = mcp_call_tool(name, arguments)
+            return jsonrpc_success(request_id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "structuredContent": result})
+        return jsonrpc_error(request_id, -32601, f"method not found: {method}")
+    except Exception as exc:
+        return jsonrpc_error(request_id, -32000, str(exc))
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -2876,13 +2970,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.json_response(payload)
             return
         if path == "/api/mcp/status":
-            cached = cache_get("agents")
-            if cache_is_fresh(cached) and isinstance(cached.get("mcp"), dict):
-                self.json_response({"ok": True, "mcp": cached.get("mcp")})
-                return
             try:
-                payload = cache_set("agents", summarize_agents())
-                self.json_response({"ok": True, "mcp": payload.get("mcp")})
+                self.json_response(current_mcp_status_payload())
             except Exception as exc:
                 payload = stale_payload("agents", exc)
                 if payload and isinstance(payload.get("mcp"), dict):
@@ -2914,6 +3003,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         try:
             data = read_body_json(self)
+            if path == "/mcp":
+                if isinstance(data, list):
+                    responses = [r for item in data if isinstance(item, dict) for r in [handle_mcp_jsonrpc(item)] if r is not None]
+                    self.json_response(responses if responses else {"ok": True})
+                else:
+                    response = handle_mcp_jsonrpc(data)
+                    self.json_response(response if response is not None else {"ok": True})
+                return
             agent_id = str(data.get("agentId") or "observer")
             if path == "/api/chat/send":
                 message = str(data.get("message") or "")
