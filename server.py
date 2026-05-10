@@ -643,6 +643,45 @@ def compact_local_chat_summary(agent_id: str, limit: int = 12) -> str:
     return "\n".join(lines[-limit:])
 
 
+def recent_completion_report_for_handoff(agent_id: str, limit: int = 80) -> str:
+    rows = public_history(agent_id, mark_read=False).get("messages", [])[-limit:]
+    for item in reversed(rows):
+        if item.get("role") != "assistant":
+            continue
+        text = strip_internal_report_contract(str(item.get("content") or "")).strip()
+        if not text or is_internal_status_text(text) or is_progress_only_report_text(text):
+            continue
+        lowered = text.lower()
+        completion_markers = ("완료보고", "완료 보고", "완료했습니다", "완료했습니다.", "커밋/push", "커밋/푸시", "검증:", "검증 결과")
+        if any(marker in text for marker in completion_markers) or "commit:" in lowered or "push 완료" in text:
+            return text[:1600]
+    return ""
+
+
+def build_observer_handoff_text(agent_id: str, summary: str) -> str:
+    latest_report = recent_completion_report_for_handoff(agent_id)
+    lines = [
+        "[이전 관제 대화 요약]",
+        summary or "요약할 최근 대화가 없습니다.",
+    ]
+    if latest_report:
+        lines.extend([
+            "",
+            "[최근 완료보고 후보 - 현재 채팅에 다시 보여줘야 할 수 있음]",
+            latest_report,
+        ])
+    lines.extend([
+        "",
+        "[세션 연속성 규칙]",
+        "이 메시지는 새 세션이 아니라 같은 관제 대화의 이어받기입니다.",
+        "이전 요약이나 최근 완료보고 후보에 완료/검증/커밋/차단 내용이 있고 현재 채팅에 보이지 않는다는 지적이 오면, 새 작업을 시작하지 말고 현재 채팅에 완료보고를 즉시 재게시하세요.",
+        "'이전 세션에 있습니다'만 말하는 것은 실패입니다. 원인 설명보다 현재 채팅 기준 최종 산출물·검증·실패/차단을 먼저 보고하세요.",
+        "",
+        "위 요약을 참고해 새 관제 세션에서 이어서 답하세요.",
+    ])
+    return "\n".join(lines)
+
+
 def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> dict[str, Any]:
     if agent_id not in {a["id"] for a in AGENTS}:
         raise ValueError("허용되지 않은 에이전트입니다.")
@@ -661,7 +700,7 @@ def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict
         return key, None
     summary = compact_local_chat_summary(agent_id)
     result = create_new_observer_chat_session(agent_id, "context-auto")
-    handoff = "[이전 관제 대화 요약]\n" + (summary or "요약할 최근 대화가 없습니다.") + "\n\n위 요약을 참고해 새 관제 세션에서 이어서 답하세요."
+    handoff = build_observer_handoff_text(agent_id, summary)
     return result["sessionKey"], handoff
 
 
@@ -1277,7 +1316,9 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
         "\n\n[관제 보고 규칙] "
         "작업 요청이면 시작보고와 완료보고를 구분하세요. "
         "'시작합니다/진행하겠습니다/완료되면 보고하겠습니다'는 완료가 아닙니다. "
-        "최종 산출물, 검증 결과, 실패/차단 사유를 사용자에게 보고해야 일이 완료됩니다."
+        "최종 산출물, 검증 결과, 실패/차단 사유를 사용자에게 보고해야 일이 완료됩니다. "
+        "이전 관제 대화 요약/최근 완료보고 후보가 포함된 새 세션 이어받기에서는 세션이 바뀌었더라도 같은 대화로 취급하세요. "
+        "사용자가 완료보고가 안 보인다고 하거나 확인 결과를 요구하면, 이전 세션 탓만 하지 말고 현재 채팅에 완료보고를 즉시 재게시하세요."
     )
     outbound_for_worker = f"{outbound_message}{report_contract}"
     worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_for_worker, request_id), daemon=True)
