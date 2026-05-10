@@ -2252,6 +2252,16 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
     }
 
 
+def mcp_tool_envelope(tool: str, result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "observer.mcp.tool_result.v1",
+        "tool": tool,
+        "generatedAt": int(time.time() * 1000),
+        "ok": bool(result.get("ok", True)),
+        "result": result,
+    }
+
+
 def build_mcp_status_context(
     agents: list[dict[str, Any]],
     acp_sessions: dict[str, Any],
@@ -2361,7 +2371,7 @@ def acp_session_detail(record_id: str) -> dict[str, Any]:
     raw_pid = data.get("pid")
     pid = int(raw_pid) if str(raw_pid or "").isdigit() else 0
     messages = data.get("messages") if isinstance(data.get("messages"), list) else []
-    return {
+    result = {
         "ok": True,
         "recordId": str(data.get("acpx_record_id") or path.stem),
         "sessionId": str(data.get("acp_session_id") or ""),
@@ -2379,6 +2389,8 @@ def acp_session_detail(record_id: str) -> dict[str, Any]:
         "streamTail": read_acp_stream_tail(data),
         "tokenUsage": data.get("cumulative_token_usage") or data.get("request_token_usage") or {},
     }
+    result["mcpTool"] = mcp_tool_envelope("observer.acp.detail", {k: v for k, v in result.items() if k != "mcpTool"})
+    return result
 
 
 def recover_acp_session(record_id: str) -> dict[str, Any]:
@@ -2398,7 +2410,9 @@ def recover_acp_session(record_id: str) -> dict[str, Any]:
     tail = str(detail.get("streamTail") or "").strip()
     if tail:
         summary_lines.append("- stream tail: " + compact_report_line(tail.replace("\n", " "), 260))
-    return {"ok": True, "detail": detail, "summary": "\n".join(summary_lines)}
+    result = {"ok": True, "detail": detail, "summary": "\n".join(summary_lines)}
+    result["mcpTool"] = mcp_tool_envelope("observer.acp.recover", {k: v for k, v in result.items() if k != "mcpTool"})
+    return result
 
 
 def abort_acp_session(record_id: str) -> dict[str, Any]:
@@ -2416,7 +2430,9 @@ def abort_acp_session(record_id: str) -> dict[str, Any]:
         data["acpx"]["closedByObserverSite"] = True
         data["acpx"]["closedReason"] = "manual abort"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    return {"ok": True, "killed": killed, "recordId": str(data.get("acpx_record_id") or path.stem), "acpSessions": summarize_acp_sessions()}
+    result = {"ok": True, "killed": killed, "recordId": str(data.get("acpx_record_id") or path.stem), "acpSessions": summarize_acp_sessions()}
+    result["mcpTool"] = mcp_tool_envelope("observer.acp.abort", {k: v for k, v in result.items() if k != "mcpTool"})
+    return result
 
 
 def cleanup_stale_acp_sessions() -> dict[str, Any]:
@@ -2446,7 +2462,9 @@ def cleanup_stale_acp_sessions() -> dict[str, Any]:
                 data["acpx"]["closedReason"] = "stale pid missing"
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
             closed.append(str(path))
-    return {"ok": True, "closed": len(closed), "paths": closed[:20], "acpSessions": summarize_acp_sessions()}
+    result = {"ok": True, "closed": len(closed), "paths": closed[:20], "acpSessions": summarize_acp_sessions()}
+    result["mcpTool"] = mcp_tool_envelope("observer.acp.cleanup_stale", {k: v for k, v in result.items() if k != "mcpTool"})
+    return result
 
 
 def spawn_acp_task(data: dict[str, Any]) -> dict[str, Any]:
@@ -2474,7 +2492,9 @@ def spawn_acp_task(data: dict[str, Any]) -> dict[str, Any]:
         f"runtime: acp\nagentId: {target_agent}\nmode: {params['mode']}\nlabel: {label}\ncwd: {cwd}\ntask:\n{task}"
     )
     queued = send_chat("observer", instruction)
-    return {"ok": True, "accepted": True, "queuedVia": "observer-chat", "params": params, "requestId": queued.get("requestId"), "sessionKey": queued.get("sessionKey"), "acpSessions": summarize_acp_sessions()}
+    result = {"ok": True, "accepted": True, "queuedVia": "observer-chat", "params": params, "requestId": queued.get("requestId"), "sessionKey": queued.get("sessionKey"), "acpSessions": summarize_acp_sessions()}
+    result["mcpTool"] = mcp_tool_envelope("observer.acp.spawn", {k: v for k, v in result.items() if k != "mcpTool"})
+    return result
 
 
 def summarize_agents() -> dict[str, Any]:
