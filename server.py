@@ -246,14 +246,14 @@ def read_gateway_token() -> str:
         return ""
 
 
-def read_body_json(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
+def read_body_json(handler: SimpleHTTPRequestHandler) -> Any:
     length = int(handler.headers.get("Content-Length") or "0")
     if length <= 0 or length > MAX_SETTINGS_BODY_BYTES:
         raise ValueError("invalid request body size")
     raw = handler.rfile.read(length).decode("utf-8")
     data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("request body must be an object")
+    if not isinstance(data, (dict, list)):
+        raise ValueError("request body must be an object or JSON-RPC batch array")
     return data
 
 
