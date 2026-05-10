@@ -2127,6 +2127,21 @@ def cpu_hog_alerts() -> list[dict[str, Any]]:
     return alerts
 
 
+def active_work_log_has_terminal_marker(text: str) -> bool:
+    if not text:
+        return False
+    markers = (
+        "== status ==",
+        "Process exited with code 0",
+        "✓ built",
+        "vite_build_noempty=0",
+        "restore_dist=0",
+        "diff_check=0",
+        "tsc_noemit=0",
+    )
+    return any(marker in text for marker in markers)
+
+
 def active_work_alerts() -> list[dict[str, Any]]:
     active = load_mylene_active_work()
     if not active:
@@ -2141,9 +2156,9 @@ def active_work_alerts() -> list[dict[str, Any]]:
         command = str(unit.get("command") or "")
         pid = str(unit.get("pid") or "")
         alive = bool(pid and Path(f"/proc/{pid}").exists()) or process_matches_hint(command[:80])
-        if not alive:
-            alerts.append({"kind": "active-work-orphan", "severity": "critical", "title": "activeWork running인데 실행 단위가 안 보임", "detail": f"{title} · unit={unit.get('label') or unit.get('type')} · log={log or '-'}"})
         text = tail_text(log) if log else ""
+        if not alive and not active_work_log_has_terminal_marker(text):
+            alerts.append({"kind": "active-work-orphan", "severity": "critical", "title": "activeWork running인데 실행 단위가 안 보임", "detail": f"{title} · unit={unit.get('label') or unit.get('type')} · log={log or '-'}"})
         lowered = text.lower()
         if text and any(key in lowered for key in ["qa_report_artifacts=1", "publication_semantic=2", "semantic_static=2", "error:", "traceback"]):
             alerts.append({"kind": "active-work-log-failure", "severity": "critical", "title": "activeWork 로그 실패 감지", "detail": f"{title} · {unit.get('label') or unit.get('type')} · {log}"})
