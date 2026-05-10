@@ -2160,6 +2160,17 @@ def summarize_ops_alerts() -> dict[str, Any]:
     return {"total": len(alerts), "critical": sum(1 for a in alerts if a.get("severity") == "critical"), "warning": sum(1 for a in alerts if a.get("severity") == "warning"), "alerts": alerts}
 
 
+def is_nonblocking_maintenance_session(session: dict[str, Any]) -> bool:
+    key = str(session.get("key") or "")
+    label = str(session.get("label") or session.get("displayName") or session.get("derivedTitle") or "")
+    preview = str(session.get("lastMessagePreview") or "")
+    if "content-report-intraday-snapshot-refresh" in key or "content-report-intraday-snapshot-refresh" in label:
+        return True
+    if preview.strip() == "CONTENT_REPORT_REFRESH_OK":
+        return True
+    return False
+
+
 def summarize_agents() -> dict[str, Any]:
     now = int(time.time() * 1000)
     sanitize_internal_report_contract_messages()
@@ -2172,7 +2183,8 @@ def summarize_agents() -> dict[str, Any]:
         base = apply_agent_settings(raw_base)
         agent_sessions = [s for s in sessions if isinstance(s, dict) and (s.get("agentId") == base["id"] or str(s.get("key", "")).startswith(f"agent:{base['id']}:") )]
         agent_sessions.sort(key=lambda s: to_epoch_ms(s.get("updatedAt") or s.get("startedAt")), reverse=True)
-        active = [s for s in agent_sessions if normalize_status(str(s.get("status") or "")) == "working"]
+        state_sessions = [s for s in agent_sessions if not is_nonblocking_maintenance_session(s)]
+        active = [s for s in state_sessions if normalize_status(str(s.get("status") or "")) == "working"]
         recent_active = []
         stale_active = []
         for session in active:
@@ -2182,7 +2194,7 @@ def summarize_agents() -> dict[str, Any]:
                 recent_active.append(session)
             else:
                 stale_active.append(session)
-        latest = agent_sessions[0] if agent_sessions else None
+        latest = state_sessions[0] if state_sessions else (agent_sessions[0] if agent_sessions else None)
         current = recent_active[0] if recent_active else latest
         chat_rows = agent_session_key_rows(base["id"], agent_sessions)
         chat_key = observer_chat_session_key_from_rows(base["id"], chat_rows)
