@@ -2412,8 +2412,15 @@ def spawn_acp_task(data: dict[str, Any]) -> dict[str, Any]:
         "thread": False,
         "label": label,
     }
-    result = gateway_call("sessions.spawn", params, timeout=30)
-    return {"ok": True, "params": params, "result": result, "acpSessions": summarize_acp_sessions()}
+    # The Gateway does not expose sessions.spawn as a public RPC method on this build.
+    # Queue the request through observer so the agent uses its first-class sessions_spawn tool.
+    instruction = (
+        "관제 웹 ACP 작업 시작 요청입니다. 아래 파라미터 그대로 sessions_spawn 도구를 사용해 실행하세요. "
+        "시작보고와 완료보고를 구분하고, 결과/차단 사유를 관제 채팅에 보고하세요.\n\n"
+        f"runtime: acp\nagentId: {target_agent}\nmode: {params['mode']}\nlabel: {label}\ncwd: {cwd}\ntask:\n{task}"
+    )
+    queued = send_chat("observer", instruction)
+    return {"ok": True, "accepted": True, "queuedVia": "observer-chat", "params": params, "requestId": queued.get("requestId"), "sessionKey": queued.get("sessionKey"), "acpSessions": summarize_acp_sessions()}
 
 
 def summarize_agents() -> dict[str, Any]:
