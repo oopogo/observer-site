@@ -937,6 +937,20 @@ def wait_for_agent_reply(session_key: str, after_ms: int, timeout_seconds: int =
     return None
 
 
+def wait_for_non_progress_agent_reply(session_key: str, after_ms: int, timeout_seconds: int = 900) -> str | None:
+    """Wait for the latest visible assistant reply that is not just a start/progress report."""
+    deadline = time.time() + timeout_seconds
+    latest_progress: str | None = None
+    while time.time() < deadline:
+        text = latest_assistant_text_from_session(session_key, after_ms)
+        if text and not is_internal_status_text(text):
+            if not is_progress_only_report_text(text):
+                return text
+            latest_progress = text
+        time.sleep(1.0)
+    return latest_progress
+
+
 
 def is_internal_status_text(text: str) -> bool:
     stripped = text.strip()
@@ -1245,6 +1259,10 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=120)
         if text:
             text = strip_internal_report_contract(text)
+        if text and is_progress_only_report_text(text):
+            final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=900)
+            if final_text:
+                text = strip_internal_report_contract(final_text)
         if not text or is_internal_status_text(text):
             reason = compact_report_line(text or "empty", 120)
             text = build_harness_status_reply(agent_id, agent_name, session_key, message, request_start_ms, reason)
