@@ -27,6 +27,11 @@ HISTORY_PATH = DATA_DIR / "chat-history.json"
 SETTINGS_PATH = DATA_DIR / "agent-settings.json"
 READ_STATE_PATH = DATA_DIR / "chat-read-state.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
+LOCAL_FILE_ROOTS = [
+    Path("/mnt/c/MegaGrit/RogueLike_001/qa-artifacts"),
+    Path("/mnt/c/MegaGrit/OpenClaw/observer-site/.data/uploads"),
+]
+MAX_LOCAL_FILE_BYTES = 5 * 1024 * 1024
 CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
 SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
@@ -272,6 +277,37 @@ def load_history() -> dict[str, list[dict[str, Any]]]:
 def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+
+
+def local_file_response_payload(raw_path: str) -> tuple[Path, str]:
+    file_path = Path(raw_path).resolve()
+    allowed = False
+    for root in LOCAL_FILE_ROOTS:
+        try:
+            file_path.relative_to(root.resolve())
+            allowed = True
+            break
+        except ValueError:
+            continue
+    if not allowed:
+        raise PermissionError("허용되지 않은 파일 경로입니다.")
+    if not file_path.is_file():
+        raise FileNotFoundError("파일을 찾을 수 없습니다.")
+    if file_path.stat().st_size > MAX_LOCAL_FILE_BYTES:
+        raise ValueError("파일이 너무 큽니다.")
+    mime_by_ext = {
+        ".txt": "text/plain; charset=utf-8",
+        ".log": "text/plain; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    return file_path, mime_by_ext.get(file_path.suffix.lower(), "text/plain; charset=utf-8")
 
 
 def is_completion_report_content(content: str, status: str) -> bool:
@@ -3141,6 +3177,27 @@ class Handler(SimpleHTTPRequestHandler):
             mime_by_ext = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
             mime = mime_by_ext.get(file_path.suffix.lower(), "application/octet-stream")
             data = file_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/local-file":
+            from urllib.parse import parse_qs, urlparse
+            raw_path = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
+            try:
+                file_path, mime = local_file_response_payload(raw_path)
+                data = file_path.read_bytes()
+            except PermissionError as exc:
+                self.send_error(403, str(exc))
+                return
+            except FileNotFoundError as exc:
+                self.send_error(404, str(exc))
+                return
+            except Exception as exc:
+                self.send_error(400, str(exc))
+                return
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))

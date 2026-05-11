@@ -2049,7 +2049,7 @@
 
       function linkifyText(text) {
         const value = String(text || '');
-        const urlRegex = /(?:https?:\/\/|www\.|\/qa\/reports\/[^\s<>()\[\]{}]+)/g;
+        const urlRegex = /(?:https?:\/\/|www\.|\/qa\/reports\/[^\s<>()\[\]{}]+|\/mnt\/c\/MegaGrit\/[^\s<>()\[\]{}]+)/g;
         let result = '';
         let lastIndex = 0;
         for (const match of value.matchAll(urlRegex)) {
@@ -2060,6 +2060,7 @@
           let href = displayUrl;
           if (displayUrl.startsWith('www.')) href = `https://${displayUrl}`;
           if (displayUrl.startsWith('/qa/reports/')) href = `https://rogueqa.megagrit-ai.com${displayUrl}`;
+          if (displayUrl.startsWith('/mnt/c/MegaGrit/')) href = `/local-file?path=${encodeURIComponent(displayUrl)}`;
           result += escapeHtml(value.slice(lastIndex, start));
           result += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayUrl)}</a>`;
           result += escapeHtml(trailing);
