@@ -1099,6 +1099,7 @@
       .report-title { font-weight: 800; margin-bottom: 4px; }
       .report-meta { color: var(--muted); font-size: 12px; }
       .report-detail { display: none; white-space: pre-wrap; color: #cbd6ea; padding: 0 12px 12px; font-size: 12px; line-height: 1.5; }
+      .report-detail a { color: #8ec5ff; text-decoration: underline; text-underline-offset: 2px; }
       .report-item.open .report-detail { display: block; }
 
       .recover-button:disabled, .chat-send:disabled {
@@ -2048,7 +2049,7 @@
 
       function linkifyText(text) {
         const value = String(text || '');
-        const urlRegex = /(?:https?:\/\/|www\.)[^\s<>()\[\]{}]+/g;
+        const urlRegex = /(?:https?:\/\/|www\.|\/qa\/reports\/[^\s<>()\[\]{}]+)/g;
         let result = '';
         let lastIndex = 0;
         for (const match of value.matchAll(urlRegex)) {
@@ -2056,7 +2057,9 @@
           const start = match.index || 0;
           const trailing = rawUrl.match(/[.,!?;:]+$/)?.[0] || '';
           const displayUrl = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
-          const href = displayUrl.startsWith('www.') ? `https://${displayUrl}` : displayUrl;
+          let href = displayUrl;
+          if (displayUrl.startsWith('www.')) href = `https://${displayUrl}`;
+          if (displayUrl.startsWith('/qa/reports/')) href = `https://rogueqa.megagrit-ai.com${displayUrl}`;
           result += escapeHtml(value.slice(lastIndex, start));
           result += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayUrl)}</a>`;
           result += escapeHtml(trailing);
@@ -3116,11 +3119,20 @@
         reportsBackdrop.setAttribute('aria-hidden', 'true');
       }
 
+      function parseReportTimestampMs(report) {
+        const completedAt = String(report && report.completedAt || '').trim();
+        if (completedAt) {
+          const parsed = Date.parse(completedAt);
+          if (!Number.isNaN(parsed)) return parsed;
+        }
+        return Number(report && report.ts || 0);
+      }
+
       function reportItemHtml(report, index) {
         const title = escapeHtml(report.title || `완료보고 ${index + 1}`);
         const result = escapeHtml(report.summary || report.result || '결과 요약 없음');
-        const completed = escapeHtml(report.completedAt || formatMessageTimestamp(report.ts));
-        const detail = escapeHtml(report.content || '상세 내용 없음');
+        const completed = escapeHtml(formatMessageTimestamp(parseReportTimestampMs(report)) || '시간 미상');
+        const detail = linkifyText(report.content || '상세 내용 없음');
         return `<article class="report-item"><button class="report-toggle" type="button"><div class="report-title">${title}</div><div class="report-meta">${completed} · ${result}</div></button><div class="report-detail">${detail}</div></article>`;
       }
 
