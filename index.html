@@ -2049,7 +2049,8 @@
 
       function linkifyText(text) {
         const value = String(text || '');
-        const urlRegex = /(?:https?:\/\/|www\.|\/qa\/reports\/[^\s<>()\[\]{}]+|\/mnt\/c\/MegaGrit\/[^\s<>()\[\]{}]+)/g;
+        const urlPart = '[^\\s<>()\\[\\]{}]+';
+        const urlRegex = new RegExp(`(?:https?:\\/\\/${urlPart}|www\\.${urlPart}|\\/qa\\/reports\\/${urlPart}|\\/mnt\\/c\\/MegaGrit\\/${urlPart})`, 'g');
         let result = '';
         let lastIndex = 0;
         for (const match of value.matchAll(urlRegex)) {
