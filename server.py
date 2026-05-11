@@ -2301,13 +2301,16 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
         "needsRecovery": sum(1 for r in rows if r.get("state") in {"running", "stale"}),
         "needsReportCheck": sum(1 for r in rows if r.get("state") == "closed" and int(r.get("messageCount") or 0) > 0),
     }
+    visible_rows = [r for r in rows if r.get("state") != "closed"]
     return {
-        "total": len(rows),
+        "total": len(visible_rows),
+        "allTotal": len(rows),
         "active": lifecycle["running"],
         "stale": lifecycle["stale"],
         "closed": lifecycle["closed"],
+        "hiddenClosed": lifecycle["closed"],
         "lifecycle": lifecycle,
-        "sessions": rows[:limit],
+        "sessions": visible_rows[:limit],
     }
 
 

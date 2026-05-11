@@ -2616,9 +2616,11 @@
         if (!box) return;
         const acp = payload.acpSessions || {};
         const sessions = acp.sessions || [];
-        box.classList.toggle('open', (acp.total || 0) > 0 || Boolean(acpLastResult));
-        if (!(acp.total || 0)) {
-          box.innerHTML = acpResultHtml();
+        const visibleCount = sessions.length;
+        const hiddenClosed = acp.hiddenClosed || acp.closed || 0;
+        box.classList.toggle('open', visibleCount > 0 || Boolean(acpLastResult));
+        if (!visibleCount) {
+          box.innerHTML = acpLastResult ? acpResultHtml() : '';
           return;
         }
         const top = sessions.slice(0, 5).map((item) => {
@@ -2634,7 +2636,8 @@
           const record = escapeHtml(item.recordId || item.sessionId || '');
           return `<li><span class="acp-state-${state}">${escapeHtml(acpStateLabel(rawState))}</span> — <strong>${title}</strong>${messages}${pid}${cwd}${cmd}<br><strong>요약:</strong> ${summary}<br><strong>결과:</strong> ${result}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
         }).join('');
-        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0}개 실행 중 / ${acp.stale || 0}개 고아 / ${acp.closed || 0}개 종료</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">고아 정리</button></div>${acpResultHtml()}`;
+        const hiddenText = hiddenClosed ? ` · 종료된 기록 ${hiddenClosed}개 숨김` : '';
+        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0}개 실행 중 / ${acp.stale || 0}개 고아${hiddenText}</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">고아 정리</button></div>${acpResultHtml()}`;
       }
 
       async function postAcpAction(action, recordId = '') {
