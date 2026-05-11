@@ -1074,6 +1074,33 @@
         display: none;
       }
 
+      .report-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .report-item {
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 16px;
+        background: rgba(255,255,255,.045);
+        overflow: hidden;
+      }
+
+      .report-toggle {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        padding: 12px;
+        cursor: pointer;
+      }
+
+      .report-title { font-weight: 800; margin-bottom: 4px; }
+      .report-meta { color: var(--muted); font-size: 12px; }
+      .report-detail { display: none; white-space: pre-wrap; color: #cbd6ea; padding: 0 12px 12px; font-size: 12px; line-height: 1.5; }
+      .report-item.open .report-detail { display: block; }
+
       .recover-button:disabled, .chat-send:disabled {
         cursor: wait;
         opacity: .62;
@@ -1817,6 +1844,7 @@
             </div>
             <div class="ops-row">
               <button class="recover-button" type="button" id="detailButton">로그</button>
+              <button class="recover-button" type="button" id="reportsButton">완료보고</button>
               <button class="recover-button" type="button" id="wakeCheckButton">깨우기/회수</button>
               <button class="recover-button" type="button" id="manageButton">관리</button>
             </div>
@@ -1831,6 +1859,22 @@
             <div class="session-detail" id="sessionDetail">세션 상세를 보려면 “로그”를 누르세요.</div>
             <div class="chat-note">Cloudflare Access 보호 아래에서 허용된 OpenClaw 에이전트에게 실제로 전달합니다. 게이트웨이/시스템 재시작 지시는 차단됩니다.</div>
           </form>
+        </section>
+      </div>
+
+      <div class="chat-backdrop" id="reportsBackdrop" aria-hidden="true">
+        <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="reportsTitle">
+          <div class="chat-head">
+            <div class="chat-agent">
+              <div class="mini-orb">보</div>
+              <div>
+                <div class="chat-title" id="reportsTitle">밀레느 완료보고 목록</div>
+                <div class="chat-subtitle">항목을 누르면 QA 링크, 검증 로그, 원문을 펼칩니다.</div>
+              </div>
+            </div>
+            <button class="chat-close" type="button" id="reportsClose" aria-label="완료보고 닫기">×</button>
+          </div>
+          <div class="chat-body"><div class="report-list" id="reportsList"><div class="message system">완료보고를 불러오는 중입니다.</div></div></div>
         </section>
       </div>
 
@@ -1883,6 +1927,10 @@
       const workingLabel = document.getElementById('workingLabel');
       const buildNote = document.getElementById('buildNote');
       const detailButton = document.getElementById('detailButton');
+      const reportsButton = document.getElementById('reportsButton');
+      const reportsBackdrop = document.getElementById('reportsBackdrop');
+      const reportsClose = document.getElementById('reportsClose');
+      const reportsList = document.getElementById('reportsList');
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
       const manageButton = document.getElementById('manageButton');
@@ -3061,6 +3109,43 @@
       manageButton.addEventListener('click', () => {
         managementPanel.classList.toggle('hidden');
         manageButton.textContent = managementPanel.classList.contains('hidden') ? '관리' : '관리 닫기';
+      });
+
+      function closeReports() {
+        reportsBackdrop.classList.remove('open');
+        reportsBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
+      function reportItemHtml(report, index) {
+        const title = escapeHtml(report.title || `완료보고 ${index + 1}`);
+        const result = escapeHtml(report.summary || report.result || '결과 요약 없음');
+        const completed = escapeHtml(report.completedAt || formatTime(report.ts));
+        const detail = escapeHtml(report.content || '상세 내용 없음');
+        return `<article class="report-item"><button class="report-toggle" type="button"><div class="report-title">${title}</div><div class="report-meta">${completed} · ${result}</div></button><div class="report-detail">${detail}</div></article>`;
+      }
+
+      async function openReports() {
+        reportsBackdrop.classList.add('open');
+        reportsBackdrop.setAttribute('aria-hidden', 'false');
+        reportsList.innerHTML = '<div class="message system">완료보고를 불러오는 중입니다...</div>';
+        try {
+          const res = await fetch('/api/mylene/completion-reports', { cache: 'no-store' });
+          const payload = await res.json();
+          const reports = payload.reports || [];
+          reportsList.innerHTML = reports.length ? reports.map(reportItemHtml).join('') : '<div class="message system">아직 저장된 완료보고가 없습니다.</div>';
+        } catch (error) {
+          reportsList.innerHTML = `<div class="message system">완료보고 조회 실패: ${escapeHtml(error)}</div>`;
+        }
+      }
+
+      reportsButton.addEventListener('click', openReports);
+      reportsClose.addEventListener('click', closeReports);
+      reportsBackdrop.addEventListener('click', (event) => { if (event.target === reportsBackdrop) closeReports(); });
+      reportsList.addEventListener('click', (event) => {
+        const button = event.target && event.target.closest ? event.target.closest('.report-toggle') : null;
+        if (!button) return;
+        const item = button.closest('.report-item');
+        if (item) item.classList.toggle('open');
       });
 
       detailButton.addEventListener('click', async () => {

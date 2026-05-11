@@ -274,6 +274,39 @@ def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
 
 
+def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
+    reports: list[dict[str, Any]] = []
+    for item in reversed(load_history().get("main", [])):
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "")
+        content = str(item.get("content") or "")
+        if not status.startswith("mylene-work-relay"):
+            continue
+        if "밀레느 작업 완료" not in content and "완료 상세" not in content:
+            continue
+        lines = [line.strip("- ").strip() for line in content.splitlines() if line.strip()]
+        task = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("작업:")), "밀레느 완료보고")
+        result = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("결과:")), "완료")
+        completed = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("완료시각:")), "")
+        qa_links = [line for line in lines if "https://" in line or "/qa/reports/" in line]
+        log_lines = [line for line in lines if "latest-" in line or "qa-artifacts" in line]
+        reports.append({
+            "ts": int(item.get("ts") or 0),
+            "activeWorkId": item.get("activeWorkId"),
+            "title": task,
+            "result": result,
+            "completedAt": completed,
+            "summary": compact_report_line(result, 160),
+            "qaLinks": qa_links,
+            "logs": log_lines,
+            "content": content,
+        })
+        if len(reports) >= limit:
+            break
+    return {"ok": True, "reports": reports, "total": len(reports)}
+
+
 def load_work_state() -> dict[str, Any]:
     try:
         data = json.loads(WORK_STATE_PATH.read_text())
@@ -3133,6 +3166,9 @@ class Handler(SimpleHTTPRequestHandler):
                     self.json_response({"ok": True, "stale": True, "warning": payload.get("warning"), "mcp": payload.get("mcp")})
                 else:
                     self.json_response({"ok": False, "error": str(exc)}, 502)
+            return
+        if path == "/api/mylene/completion-reports":
+            self.json_response(mylene_completion_reports())
             return
         if path == "/api/observer/self-work":
             self.json_response({"ok": True, "state": load_self_work_state(), "active": active_self_work_item()})
