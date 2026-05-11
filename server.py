@@ -66,6 +66,9 @@ ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
 SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
 ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
 DEFAULT_CONTEXT_MAX_TOKENS = 1_000_000
+# H144/H145처럼 완료보고를 먼저 보낸 뒤 상태 파일 completedAt이 몇 초 늦게
+# 갱신되는 정상 흐름이 있다. 작은 시계/기록 순서 차이는 critical로 보지 않는다.
+COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS = 90
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
@@ -2169,7 +2172,10 @@ def active_work_alerts() -> list[dict[str, Any]]:
     if status == "completed":
         last_report = str(active.get("lastUserReportAt") or "")
         completed = str(active.get("completedAt") or "")
-        if completed and (not last_report or last_report < completed):
+        last_report_ms = parse_iso_ms(last_report)
+        completed_ms = parse_iso_ms(completed)
+        skew_ms = completed_ms - last_report_ms if completed_ms and last_report_ms else 0
+        if completed and (not last_report or (skew_ms > COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000)):
             alerts.append({"kind": "completed-report-missing", "severity": "critical", "title": "completed 후 사용자 보고 누락 가능", "detail": f"{title} · completedAt={completed} · lastUserReportAt={last_report or '-'}"})
     return alerts
 
