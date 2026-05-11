@@ -2629,8 +2629,10 @@
           const cwd = item.cwd ? ` · 위치 ${escapeHtml(item.cwd)}` : '';
           const pid = item.pid ? ` · pid ${escapeHtml(item.pid)}` : '';
           const messages = ` · 메시지 ${escapeHtml(item.messageCount || 0)}개`;
+          const summary = escapeHtml(item.summaryKo || '요약 없음');
+          const result = escapeHtml(item.resultKo || '결과 없음');
           const record = escapeHtml(item.recordId || item.sessionId || '');
-          return `<li><span class="acp-state-${state}">${escapeHtml(acpStateLabel(rawState))}</span> — <strong>${title}</strong>${messages}${pid}${cwd}${cmd}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
+          return `<li><span class="acp-state-${state}">${escapeHtml(acpStateLabel(rawState))}</span> — <strong>${title}</strong>${messages}${pid}${cwd}${cmd}<br><strong>요약:</strong> ${summary}<br><strong>결과:</strong> ${result}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
         }).join('');
         box.innerHTML = `<strong>ACP 작업 ${acp.active || 0}개 실행 중 / ${acp.stale || 0}개 고아 / ${acp.closed || 0}개 종료</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">고아 정리</button></div>${acpResultHtml()}`;
       }

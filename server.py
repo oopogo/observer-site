@@ -2201,6 +2201,53 @@ def parse_iso_ms(value: Any) -> int:
         return 0
 
 
+def acp_role_texts(messages: list[Any], role_key: str) -> list[str]:
+    texts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        block = message.get(role_key)
+        if not isinstance(block, dict):
+            continue
+        parts: list[str] = []
+        for item in block.get("content") or []:
+            if isinstance(item, dict) and isinstance(item.get("Text"), str):
+                parts.append(item.get("Text") or "")
+        if parts:
+            texts.append("\n".join(parts).strip())
+    return [t for t in texts if t]
+
+
+def korean_acp_summary(messages: list[Any], title: str, cwd: str) -> str:
+    user_texts = acp_role_texts(messages, "User")
+    if user_texts:
+        text = user_texts[0]
+        if "ACP smoke test" in text:
+            return "ACP 연결 확인용 스모크 테스트"
+        return compact_report_line(text.replace("[", "").replace("]", ""), 110)
+    if title and title not in {"None", ""}:
+        return compact_report_line(title, 110)
+    if cwd:
+        return f"{cwd}에서 실행된 ACP 세션"
+    return "내용 기록이 없는 ACP 세션"
+
+
+def korean_acp_result(messages: list[Any], state: str) -> str:
+    agent_texts = acp_role_texts(messages, "Agent")
+    if agent_texts:
+        text = agent_texts[-1]
+        if "ACP_SMOKE_OK" in text:
+            return "스모크 테스트 성공: ACP가 작업 위치와 git 상태를 정상 응답했습니다."
+        return compact_report_line(text, 130)
+    if state == "running":
+        return "아직 실행 중입니다."
+    if state == "stale":
+        return "프로세스가 사라져 회수/정리가 필요합니다."
+    if messages:
+        return "도구 실행 기록은 있으나 최종 텍스트 응답은 없습니다. 상세로 원문을 확인하세요."
+    return "결과 메시지가 기록되지 않았습니다."
+
+
 def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2227,16 +2274,20 @@ def summarize_acp_sessions(limit: int = 8) -> dict[str, Any]:
             messages = data.get("messages") if isinstance(data.get("messages"), list) else []
             title = str(data.get("title") or record_id.split(":")[-1])
             command = str(data.get("agent_command") or "")
+            state = "running" if pid_alive and not closed else ("closed" if closed else "stale")
+            cwd = str(data.get("cwd") or "")[:220]
             rows.append({
                 "recordId": record_id,
                 "sessionId": str(data.get("acp_session_id") or ""),
                 "title": title[:160],
+                "summaryKo": korean_acp_summary(messages, title, cwd),
+                "resultKo": korean_acp_result(messages, state),
                 "command": command[:180],
-                "cwd": str(data.get("cwd") or "")[:220],
+                "cwd": cwd,
                 "pid": pid or None,
                 "pidAlive": pid_alive,
                 "closed": closed,
-                "state": "running" if pid_alive and not closed else ("closed" if closed else "stale"),
+                "state": state,
                 "createdAt": created_ms,
                 "updatedAt": updated_ms or created_ms,
                 "messageCount": len(messages),
