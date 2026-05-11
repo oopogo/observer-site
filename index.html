@@ -230,6 +230,9 @@
       .acp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
       .acp-actions button { border: 1px solid rgba(147, 197, 253, 0.35); background: rgba(30, 64, 175, 0.28); color: var(--text); border-radius: 999px; padding: 7px 10px; cursor: pointer; font-size: 12px; }
       .acp-actions button:hover { background: rgba(37, 99, 235, 0.38); }
+      .acp-result { margin-top: 12px; border: 1px solid rgba(147, 197, 253, 0.24); background: rgba(15, 23, 42, 0.72); border-radius: 14px; padding: 10px; }
+      .acp-result-title { color: #dbeafe; font-weight: 700; margin-bottom: 6px; }
+      .acp-result pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; max-height: 260px; overflow: auto; }
 
       .board {
         position: relative;
@@ -1907,6 +1910,7 @@
       const openChatPanels = new Map();
       let selectedAgent = 'observer';
       let latestAgents = [];
+      let acpLastResult = null;
       let previousOfficePositions = new Map();
       let officeRenderCount = 0;
       let sending = false;
@@ -2564,14 +2568,24 @@
         box.innerHTML = `<strong>MCP status · ${escapeHtml(mcp.schema || '')}</strong><div class="mcp-grid">${pills}</div>`;
       }
 
+      function acpResultHtml() {
+        if (!acpLastResult) return '';
+        return `<div class="acp-result" role="status" aria-live="polite"><div class="acp-result-title">${escapeHtml(acpLastResult.title || 'ACP 결과')}</div><pre>${escapeHtml(acpLastResult.text || '')}</pre></div>`;
+      }
+
+      function setAcpResult(title, text) {
+        acpLastResult = { title, text, ts: Date.now() };
+        renderAcpSessions({ acpSessions: (window.lastAgentsPayload || {}).acpSessions || {} });
+      }
+
       function renderAcpSessions(payload) {
         const box = document.getElementById('acpPanel');
         if (!box) return;
         const acp = payload.acpSessions || {};
         const sessions = acp.sessions || [];
-        box.classList.toggle('open', (acp.total || 0) > 0);
+        box.classList.toggle('open', (acp.total || 0) > 0 || Boolean(acpLastResult));
         if (!(acp.total || 0)) {
-          box.innerHTML = '';
+          box.innerHTML = acpResultHtml();
           return;
         }
         const top = sessions.slice(0, 5).map((item) => {
@@ -2583,7 +2597,7 @@
           const record = escapeHtml(item.recordId || item.sessionId || '');
           return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
         }).join('');
-        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">stale 정리</button></div>`;
+        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">stale 정리</button></div>${acpResultHtml()}`;
       }
 
       async function postAcpAction(action, recordId = '') {
@@ -2595,22 +2609,30 @@
           const payload = await res.json();
           const toolLine = payload.mcpTool ? `\nMCP tool: ${payload.mcpTool.tool || '-'} · ${payload.mcpTool.schema || '-'}` : '';
           if (!payload.ok) {
-            appendSystemMessage(`ACP ${action} 실패: ${payload.error || res.status}${toolLine}`);
+            const text = `ACP ${action} 실패: ${payload.error || res.status}${toolLine}`;
+            setAcpResult(`ACP ${action} 실패`, text);
+            appendSystemMessage(text);
           } else if (action === 'recover') {
-            appendSystemMessage((payload.summary || 'ACP 회수 완료') + toolLine);
+            const text = (payload.summary || 'ACP 회수 완료') + toolLine;
+            setAcpResult('ACP 회수 결과', text);
+            appendSystemMessage(text);
           } else if (action === 'abort') {
-            appendSystemMessage(`ACP 중단 처리 완료: killed=${payload.killed ? 'yes' : 'no'}${toolLine}`);
+            const text = `ACP 중단 처리 완료: killed=${payload.killed ? 'yes' : 'no'}${toolLine}`;
+            setAcpResult('ACP 중단 결과', text);
+            appendSystemMessage(text);
           } else {
             const messages = (payload.messages || []).join('\n---\n');
             const tail = payload.streamTail ? `
 stream tail:
 ${payload.streamTail}` : '';
-            appendSystemMessage(`ACP 상세
+            const text = `ACP 상세
 record: ${payload.recordId}
 state: pidAlive=${payload.pidAlive} closed=${payload.closed}
 cwd: ${payload.cwd || '-'}
 messages: ${payload.messageCount || 0}
-${messages}${tail}${toolLine}`.slice(0, 3500));
+${messages}${tail}${toolLine}`.slice(0, 3500);
+            setAcpResult('ACP 상세 결과', text);
+            appendSystemMessage(text);
           }
           await loadAgents();
           return;
@@ -2620,7 +2642,9 @@ ${messages}${tail}${toolLine}`.slice(0, 3500));
           const res = await fetch('/api/acp/cleanup-stale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
           const payload = await res.json();
           const toolLine = payload.mcpTool ? ` · MCP ${payload.mcpTool.tool || '-'}` : '';
-          appendSystemMessage(payload.ok ? `ACP stale ${payload.closed || 0}개 정리 완료${toolLine}` : `ACP stale 정리 실패: ${payload.error || res.status}`);
+          const text = payload.ok ? `ACP stale ${payload.closed || 0}개 정리 완료${toolLine}` : `ACP stale 정리 실패: ${payload.error || res.status}`;
+          setAcpResult('ACP stale 정리 결과', text);
+          appendSystemMessage(text);
           await loadAgents();
           return;
         }
@@ -2636,11 +2660,14 @@ ${messages}${tail}${toolLine}`.slice(0, 3500));
         });
         const payload = await res.json();
         const toolLine = payload.mcpTool ? ` · MCP ${payload.mcpTool.tool || '-'}` : '';
-        appendSystemMessage(payload.ok ? `ACP 작업 시작 요청 완료${toolLine}` : `ACP 작업 시작 실패: ${payload.error || res.status}`);
+        const text = payload.ok ? `ACP 작업 시작 요청 완료${toolLine}` : `ACP 작업 시작 실패: ${payload.error || res.status}`;
+        setAcpResult('ACP 작업 시작 결과', text);
+        appendSystemMessage(text);
         await loadAgents();
       }
 
       function renderAgents(payload) {
+        window.lastAgentsPayload = payload;
         renderOpsAlerts(payload);
         renderMcpStatus(payload);
         renderAcpSessions(payload);
