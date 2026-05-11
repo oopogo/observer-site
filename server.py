@@ -274,33 +274,51 @@ def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
 
 
+def is_completion_report_content(content: str, status: str) -> bool:
+    if status.startswith("mylene-work-relay"):
+        return "밀레느 작업 완료" in content or "완료 상세" in content
+    if "시작 보고" in content or "시작보고" in content or "진행 중" in content:
+        return False
+    markers = ["완료보고", "완료 보고", "수동 회수 점검 완료", "최근 작업 보고", "최신 완료:"]
+    evidence = ["커밋", "QA 리포트", "외부", "검증", "git status", "repo 상태"]
+    return any(m in content for m in markers) and any(e in content for e in evidence)
+
+
 def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
     reports: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in reversed(load_history().get("main", [])):
         if not isinstance(item, dict):
             continue
         status = str(item.get("status") or "")
         content = str(item.get("content") or "")
-        if not status.startswith("mylene-work-relay"):
+        if not is_completion_report_content(content, status):
             continue
-        if "밀레느 작업 완료" not in content and "완료 상세" not in content:
-            continue
-        lines = [line.strip("- ").strip() for line in content.splitlines() if line.strip()]
-        task = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("작업:")), "밀레느 완료보고")
-        result = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("결과:")), "완료")
+        lines = [line.strip("- #*").strip() for line in content.splitlines() if line.strip()]
+        task = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("작업:")), "")
+        if not task:
+            task = next((line for line in lines if "최신 완료" in line or "완료" in line or "현재 단계" in line), "밀레느 완료보고")
+        result = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("결과:")), "")
+        if not result:
+            result = next((line for line in lines if "커밋" in line or "검증" in line or "완료" in line), "완료")
         completed = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("완료시각:")), "")
         qa_links = [line for line in lines if "https://" in line or "/qa/reports/" in line]
         log_lines = [line for line in lines if "latest-" in line or "qa-artifacts" in line]
+        key = str(item.get("activeWorkId") or "") or f"{item.get('ts')}|{task}|{result}"
+        if key in seen:
+            continue
+        seen.add(key)
         reports.append({
             "ts": int(item.get("ts") or 0),
             "activeWorkId": item.get("activeWorkId"),
-            "title": task,
+            "title": compact_report_line(task, 140),
             "result": result,
             "completedAt": completed,
             "summary": compact_report_line(result, 160),
             "qaLinks": qa_links,
             "logs": log_lines,
             "content": content,
+            "sourceStatus": status,
         })
         if len(reports) >= limit:
             break
