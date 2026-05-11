@@ -3119,7 +3119,7 @@
       function reportItemHtml(report, index) {
         const title = escapeHtml(report.title || `완료보고 ${index + 1}`);
         const result = escapeHtml(report.summary || report.result || '결과 요약 없음');
-        const completed = escapeHtml(report.completedAt || formatTime(report.ts));
+        const completed = escapeHtml(report.completedAt || formatMessageTimestamp(report.ts));
         const detail = escapeHtml(report.content || '상세 내용 없음');
         return `<article class="report-item"><button class="report-toggle" type="button"><div class="report-title">${title}</div><div class="report-meta">${completed} · ${result}</div></button><div class="report-detail">${detail}</div></article>`;
       }
