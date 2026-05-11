@@ -1030,7 +1030,23 @@ def extract_response_text(payload: Any) -> str:
         return payload.strip()
     if not isinstance(payload, dict):
         return json.dumps(payload, ensure_ascii=False)
-    for key in ("output_text", "text", "message", "content"):
+    # `sessions.send --expect-final` returns harness-shaped payloads on newer
+    # OpenClaw builds. The actual user-visible answer is often stored here, not
+    # in the generic `text/message/content` fields. Missing these keys made the
+    # bridge treat successful turns as empty/internal and replace them with the
+    # noisy harness fallback.
+    direct_keys = (
+        "finalAssistantVisibleText",
+        "finalAssistantRawText",
+        "assistantVisibleText",
+        "assistantText",
+        "reply",
+        "output_text",
+        "text",
+        "message",
+        "content",
+    )
+    for key in direct_keys:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -1038,6 +1054,12 @@ def extract_response_text(payload: Any) -> str:
             content_text = extract_content_text(value)
             if content_text:
                 return content_text
+    for container_key in ("result", "response", "data"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            nested_text = extract_response_text(nested)
+            if nested_text and not is_internal_status_text(nested_text):
+                return nested_text
     parts: list[str] = []
     for item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
         if not isinstance(item, dict):
@@ -1045,11 +1067,11 @@ def extract_response_text(payload: Any) -> str:
         for content in item.get("content", []) if isinstance(item.get("content"), list) else []:
             if isinstance(content, dict):
                 text = content.get("text") or content.get("value")
-                if isinstance(text, str):
-                    parts.append(text)
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
     if parts:
         return "\n".join(parts).strip()
-    return json.dumps(payload, ensure_ascii=False)[:4000]
+    return ""
 
 
 
@@ -1258,7 +1280,7 @@ def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, 
     if attachments and not is_simple_ping_or_test(message, attachments):
         return None
     if is_simple_ping_or_test(message, attachments):
-        return f"네, 기선님. {agent_name} 듣고 있습니다."
+        return f"네, 기선님. {agent_name} 응답 가능합니다. 필요한 작업을 바로 지시해 주세요."
     return None
 
 
@@ -1420,17 +1442,21 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=900)
             if final_text:
                 text = strip_internal_report_contract(final_text)
+        fallback_used = False
         if not text or is_internal_status_text(text):
             reason = compact_report_line(text or "empty", 120)
             text = build_harness_status_reply(agent_id, agent_name, session_key, message, request_start_ms, reason)
+            fallback_used = True
         replace_history_message(
             agent_id,
             request_id,
             "system",
             text,
-            {"status": "done", "done": True, "pending": False, "sessionKey": session_key, "role": "assistant"},
+            {"status": "error" if fallback_used else "done", "done": True, "pending": False, "error": fallback_used, "sessionKey": session_key, "role": "assistant", "harnessFallback": fallback_used},
         )
-        if is_progress_only_report_text(text):
+        if fallback_used:
+            update_work_item(agent_id, request_id, "failed", report=True, reason="empty/internal assistant response")
+        elif is_progress_only_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
             update_work_item(agent_id, request_id, "failed", report=True, reason=text)
