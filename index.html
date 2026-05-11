@@ -1869,8 +1869,8 @@
             <div class="chat-agent">
               <div class="mini-orb">보</div>
               <div>
-                <div class="chat-title" id="reportsTitle">밀레느 완료보고 목록</div>
-                <div class="chat-subtitle">항목을 누르면 QA 링크, 검증 로그, 원문을 펼칩니다.</div>
+                <div class="chat-title" id="reportsTitle">완료보고 목록</div>
+                <div class="chat-subtitle" id="reportsSubtitle">선택한 에이전트의 완료보고를 봅니다. 항목을 누르면 QA 링크, 검증 로그, 원문을 펼칩니다.</div>
               </div>
             </div>
             <button class="chat-close" type="button" id="reportsClose" aria-label="완료보고 닫기">×</button>
@@ -1932,6 +1932,8 @@
       const reportsBackdrop = document.getElementById('reportsBackdrop');
       const reportsClose = document.getElementById('reportsClose');
       const reportsList = document.getElementById('reportsList');
+      const reportsTitle = document.getElementById('reportsTitle');
+      const reportsSubtitle = document.getElementById('reportsSubtitle');
       const editSelectedButton = document.getElementById('editSelectedButton');
       const abortButton = document.getElementById('abortButton');
       const manageButton = document.getElementById('manageButton');
@@ -3143,14 +3145,19 @@
       }
 
       async function openReports() {
+        const agent = latestAgents.find((item) => item.id === selectedAgent) || { id: selectedAgent, name: selectedAgent };
         reportsBackdrop.classList.add('open');
         reportsBackdrop.setAttribute('aria-hidden', 'false');
+        reportsTitle.textContent = `${agent.name || agent.id || '선택 에이전트'} 완료보고 목록`;
+        reportsSubtitle.textContent = '선택한 에이전트의 완료보고를 봅니다. 항목을 누르면 QA 링크, 검증 로그, 원문을 펼칩니다.';
         reportsList.innerHTML = '<div class="message system">완료보고를 불러오는 중입니다...</div>';
         try {
-          const res = await fetch('/api/mylene/completion-reports', { cache: 'no-store' });
+          const params = new URLSearchParams({ agentId: selectedAgent || 'main' });
+          const res = await fetch(`/api/agent/completion-reports?${params.toString()}`, { cache: 'no-store' });
           const payload = await res.json();
+          if (!payload.ok) throw new Error(payload.error || '완료보고 API 오류');
           const reports = payload.reports || [];
-          reportsList.innerHTML = reports.length ? reports.map(reportItemHtml).join('') : '<div class="message system">아직 저장된 완료보고가 없습니다.</div>';
+          reportsList.innerHTML = reports.length ? reports.map(reportItemHtml).join('') : `<div class="message system">${escapeHtml(agent.name || agent.id || '선택 에이전트')}의 저장된 완료보고가 아직 없습니다.</div>`;
         } catch (error) {
           reportsList.innerHTML = `<div class="message system">완료보고 조회 실패: ${escapeHtml(error)}</div>`;
         }

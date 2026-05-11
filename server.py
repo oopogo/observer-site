@@ -342,23 +342,57 @@ def is_completion_report_content(content: str, status: str) -> bool:
     return any(m in content for m in markers) and any(e in content for e in evidence)
 
 
-def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
+def is_visible_completion_report_text(content: str, status: str = "") -> bool:
+    value = str(content or "").strip()
+    if not value:
+        return False
+    if value.startswith(("시작보고", "시작 보고", "상태보고:")):
+        return False
+    if is_completion_report_content(value, status):
+        return True
+    markers = (
+        "완료보고", "완료 보고", "완료", "끝났", "마쳤", "처리했습니다", "반영했습니다",
+        "설정은 끝", "설정은 현재 반영", "응답도 정상", "검증", "커밋", "push 완료",
+        "실패:", "실패했습니다", "차단", "복구됐습니다", "복구했습니다",
+    )
+    return any(marker in value for marker in markers)
+
+
+def agent_completion_reports(agent_id: str = "main", limit: int = 50) -> dict[str, Any]:
+    allowed = {str(agent.get("id")) for agent in AGENTS}
+    if agent_id not in allowed:
+        return {"ok": False, "error": "허용되지 않은 에이전트입니다.", "reports": [], "total": 0}
+    agent = next((item for item in AGENTS if item.get("id") == agent_id), {"name": agent_id})
+    agent_name = str(agent.get("name") or agent_id)
     reports: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in reversed(load_history().get("main", [])):
+    for item in reversed(load_history().get(agent_id, [])):
         if not isinstance(item, dict):
             continue
+        role = str(item.get("role") or "")
         status = str(item.get("status") or "")
-        content = str(item.get("content") or "")
-        if not is_completion_report_content(content, status):
+        content = strip_internal_report_contract(str(item.get("content") or "")).strip()
+        if not content or role not in {"assistant", "system"}:
+            continue
+        if is_internal_status_text(content) or is_progress_only_report_text(content):
+            continue
+        is_mylene_relay = agent_id == "main" and status.startswith("mylene-work-relay")
+        is_visible_final = role == "assistant" and status in {"done", "synced", "error", ""} and is_visible_completion_report_text(content, status)
+        if not is_mylene_relay and not is_visible_final and not is_completion_report_content(content, status):
+            continue
+        if item.get("quickAck") and "듣고 있습니다" in content:
             continue
         lines = [line.strip("- #*").strip() for line in content.splitlines() if line.strip()]
         task = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("작업:")), "")
+        if not task and agent_id == "main":
+            task = next((line for line in lines if "최신 완료" in line or "완료" in line or "현재 단계" in line), "")
         if not task:
-            task = next((line for line in lines if "최신 완료" in line or "완료" in line or "현재 단계" in line), "밀레느 완료보고")
+            task = lines[0] if lines else f"{agent_name} 완료보고"
         result = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("결과:")), "")
         if not result:
-            result = next((line for line in lines if "커밋" in line or "검증" in line or "완료" in line), "완료")
+            result = next((line for line in lines if "커밋" in line or "검증" in line or "완료" in line), "")
+        if not result:
+            result = lines[0] if lines else "완료"
         completed = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("완료시각:")), "")
         qa_links = [line for line in lines if "https://" in line or "/qa/reports/" in line]
         log_lines = [line for line in lines if "latest-" in line or "qa-artifacts" in line]
@@ -368,6 +402,8 @@ def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
         seen.add(key)
         reports.append({
             "ts": int(item.get("ts") or 0),
+            "agentId": agent_id,
+            "agentName": agent_name,
             "activeWorkId": item.get("activeWorkId"),
             "title": compact_report_line(task, 140),
             "result": result,
@@ -380,7 +416,11 @@ def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
         })
         if len(reports) >= limit:
             break
-    return {"ok": True, "reports": reports, "total": len(reports)}
+    return {"ok": True, "agentId": agent_id, "agentName": agent_name, "reports": reports, "total": len(reports)}
+
+
+def mylene_completion_reports(limit: int = 50) -> dict[str, Any]:
+    return agent_completion_reports("main", limit)
 
 
 def load_work_state() -> dict[str, Any]:
@@ -3286,6 +3326,12 @@ class Handler(SimpleHTTPRequestHandler):
                     self.json_response({"ok": True, "stale": True, "warning": payload.get("warning"), "mcp": payload.get("mcp")})
                 else:
                     self.json_response({"ok": False, "error": str(exc)}, 502)
+            return
+        if path == "/api/agent/completion-reports":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            agent_id = (qs.get("agentId") or ["main"])[0]
+            self.json_response(agent_completion_reports(agent_id))
             return
         if path == "/api/mylene/completion-reports":
             self.json_response(mylene_completion_reports())
