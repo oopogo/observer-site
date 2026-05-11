@@ -2059,7 +2059,11 @@
           const displayUrl = trailing ? rawUrl.slice(0, -trailing.length) : rawUrl;
           let href = displayUrl;
           if (displayUrl.startsWith('www.')) href = `https://${displayUrl}`;
-          if (displayUrl.startsWith('/qa/reports/')) href = `https://rogueqa.megagrit-ai.com${displayUrl}`;
+          try {
+            const parsed = new URL(href, window.location.origin);
+            if (parsed.hostname === 'rogueqa.megagrit-ai.com' && parsed.pathname.startsWith('/qa/reports/')) href = parsed.pathname;
+          } catch (_) {}
+          if (displayUrl.startsWith('/qa/reports/')) href = displayUrl;
           if (displayUrl.startsWith('/mnt/c/MegaGrit/')) href = `/local-file?path=${encodeURIComponent(displayUrl)}`;
           result += escapeHtml(value.slice(lastIndex, start));
           result += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayUrl)}</a>`;

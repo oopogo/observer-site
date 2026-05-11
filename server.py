@@ -29,7 +29,13 @@ READ_STATE_PATH = DATA_DIR / "chat-read-state.json"
 UPLOAD_DIR = DATA_DIR / "uploads"
 LOCAL_FILE_ROOTS = [
     Path("/mnt/c/MegaGrit/RogueLike_001/qa-artifacts"),
+    Path("/mnt/c/MegaGrit/RogueLike_001/public/qa/reports"),
+    Path("/mnt/c/MegaGrit/RogueLike_001/dist/qa/reports"),
     Path("/mnt/c/MegaGrit/OpenClaw/observer-site/.data/uploads"),
+]
+QA_REPORT_ROOTS = [
+    Path("/mnt/c/MegaGrit/RogueLike_001/public/qa/reports"),
+    Path("/mnt/c/MegaGrit/RogueLike_001/dist/qa/reports"),
 ]
 MAX_LOCAL_FILE_BYTES = 5 * 1024 * 1024
 CLEANUP_STATE_PATH = DATA_DIR / "session-cleanup-state.json"
@@ -277,6 +283,21 @@ def load_history() -> dict[str, list[dict[str, Any]]]:
 def save_history(history: dict[str, list[dict[str, Any]]]) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+
+
+def qa_report_response_payload(report_name: str) -> tuple[Path, str]:
+    safe_name = Path(report_name).name
+    if not safe_name or safe_name != report_name or not safe_name.endswith((".html", ".htm")):
+        raise PermissionError("허용되지 않은 QA 리포트 경로입니다.")
+    for root in QA_REPORT_ROOTS:
+        file_path = (root / safe_name).resolve()
+        try:
+            file_path.relative_to(root.resolve())
+        except ValueError:
+            continue
+        if file_path.is_file():
+            return file_path, "text/html; charset=utf-8"
+    raise FileNotFoundError("QA 리포트를 찾을 수 없습니다.")
 
 
 def local_file_response_payload(raw_path: str) -> tuple[Path, str]:
@@ -3166,6 +3187,27 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path.startswith("/qa/reports/"):
+            from urllib.parse import unquote
+            report_name = Path(unquote(path.rsplit("/", 1)[-1])).name
+            try:
+                file_path, mime = qa_report_response_payload(report_name)
+                data = file_path.read_bytes()
+            except PermissionError as exc:
+                self.send_error(403, str(exc))
+                return
+            except FileNotFoundError as exc:
+                self.send_error(404, str(exc))
+                return
+            except Exception as exc:
+                self.send_error(400, str(exc))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if path.startswith("/uploads/"):
             from urllib.parse import unquote
