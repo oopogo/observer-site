@@ -55,6 +55,7 @@ OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/open
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
     {"id": "observer", "name": "observer", "orb": "옵", "role": "운영 감시자", "tags": ["OPS", "GATEWAY", "감시"]},
+    {"id": "lina", "name": "리나", "orb": "리", "role": "게임개발 에이전트", "tags": ["GAMEDEV", "CALL-ONLY", "게임"]},
     {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
 CACHE_TTL_SECONDS = 8
@@ -1438,7 +1439,9 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
     append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
-    quick_reply = quick_ping_reply(agent["name"], message, saved_attachments)
+    # 게임개발 호출형 에이전트는 '테스트/대답해' 같은 짧은 입력도 실제 에이전트에게
+    # 보내서 성격과 역할이 드러나는 답을 받는다. 빈 '듣고 있습니다' 응답은 관제 UX를 해친다.
+    quick_reply = None if agent_id == "lina" else quick_ping_reply(agent["name"], message, saved_attachments)
     if quick_reply:
         append_history(agent_id, "assistant", quick_reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "quickAck": True})
         history_payload = public_history(agent_id, mark_read=False)
