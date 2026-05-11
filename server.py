@@ -2109,6 +2109,30 @@ def update_mylene_active_work_last_report(report_time: str) -> None:
         return
 
 
+def mylene_active_work_detail_lines(active: dict[str, Any]) -> list[str]:
+    lines = ["상세 확인 위치:"]
+    lines.append("관제 화면에서 밀레느 카드를 선택한 뒤 [로그] 버튼을 누르면 최근 보고/세션 상세를 볼 수 있습니다.")
+    units = active.get("executionUnits") if isinstance(active.get("executionUnits"), list) else []
+    report_url = ""
+    log_paths: list[str] = []
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        command = str(unit.get("command") or "")
+        marker = "/qa/reports/"
+        if marker in command and not report_url:
+            tail = command.split(marker, 1)[1].split()[0].strip("'\";,")
+            report_url = "https://rogueqa.megagrit-ai.com" + marker + tail
+        log = str(unit.get("log") or "")
+        if log:
+            log_paths.append(log)
+    if report_url:
+        lines.append(f"QA 리포트: {report_url}")
+    if log_paths:
+        lines.append("검증 로그: " + " / ".join(log_paths[-3:]))
+    return lines
+
+
 def relay_mylene_active_work_report() -> None:
     active = load_mylene_active_work()
     if not active:
@@ -2130,7 +2154,7 @@ def relay_mylene_active_work_report() -> None:
             f"작업: {title}",
             f"결과: {stage or '완료'}",
             f"완료시각: {completed or '-'}",
-            "검증/커밋 상세는 밀레느 완료보고 또는 관제 상세에서 확인하세요.",
+            *mylene_active_work_detail_lines(active),
         ]
     elif status in {"running", "working", "verifying", "reporting"}:
         heading = "밀레느 작업 진행 중"
