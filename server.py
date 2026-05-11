@@ -33,6 +33,7 @@ ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 WORK_STATE_PATH = DATA_DIR / "work-state.json"
 SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
+MYLENE_WORK_REPORT_RELAY_PATH = DATA_DIR / "mylene-work-report-relay.json"
 MYLENE_HEARTBEAT_STATE_PATH = Path("/home/oopogo/.openclaw/workspace/memory/heartbeat-state.json")
 ACP_SESSION_DIRS = [
     Path("/home/oopogo/.openclaw/workspace/state/sessions"),
@@ -2081,6 +2082,75 @@ def load_mylene_active_work() -> dict[str, Any] | None:
         return None
 
 
+def load_mylene_work_relay_state() -> dict[str, Any]:
+    try:
+        data = json.loads(MYLENE_WORK_REPORT_RELAY_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_mylene_work_relay_state(data: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    MYLENE_WORK_REPORT_RELAY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def update_mylene_active_work_last_report(report_time: str) -> None:
+    try:
+        data = json.loads(MYLENE_HEARTBEAT_STATE_PATH.read_text())
+        active = data.get("activeWork") if isinstance(data, dict) else None
+        if not isinstance(active, dict):
+            return
+        active["lastUserReportAt"] = report_time
+        active["lastSeenAt"] = report_time
+        data["updatedAt"] = report_time
+        MYLENE_HEARTBEAT_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    except Exception:
+        return
+
+
+def relay_mylene_active_work_report() -> None:
+    active = load_mylene_active_work()
+    if not active:
+        return
+    work_id = str(active.get("id") or "")
+    if not work_id:
+        return
+    status = str(active.get("status") or "")
+    stage = str(active.get("currentStage") or "")
+    title = str(active.get("title") or work_id)
+    completed = str(active.get("completedAt") or "")
+    relay_key = f"{work_id}|{status}|{stage}|{completed}"
+    state = load_mylene_work_relay_state()
+    if state.get("lastRelayKey") == relay_key:
+        return
+    if status == "completed":
+        heading = "밀레느 작업 완료"
+        body = [
+            f"작업: {title}",
+            f"결과: {stage or '완료'}",
+            f"완료시각: {completed or '-'}",
+            "검증/커밋 상세는 밀레느 완료보고 또는 관제 상세에서 확인하세요.",
+        ]
+    elif status in {"running", "working", "verifying", "reporting"}:
+        heading = "밀레느 작업 진행 중"
+        body = [
+            f"작업: {title}",
+            f"현재 단계: {stage or status}",
+            f"시작시각: {active.get('startedAt') or '-'}",
+        ]
+    else:
+        heading = "밀레느 작업 상태 변경"
+        body = [f"작업: {title}", f"상태: {stage or status or '-'}"]
+    text = heading + "\n" + "\n".join(f"- {line}" for line in body)
+    append_history("main", "system", text, {"status": "mylene-work-relay", "activeWorkId": work_id, "activeWorkStatus": status, "relayKey": relay_key})
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+    now_iso = now_iso[:-2] + ":" + now_iso[-2:]
+    update_mylene_active_work_last_report(now_iso)
+    state.update({"lastRelayKey": relay_key, "lastActiveWorkId": work_id, "lastStatus": status, "lastStage": stage, "lastRelayedAt": int(time.time() * 1000)})
+    save_mylene_work_relay_state(state)
+
+
 def tail_text(path: str, max_bytes: int = 12_000) -> str:
     try:
         p = Path(path)
@@ -2740,6 +2810,7 @@ def summarize_agents() -> dict[str, Any]:
         output.append(agent_payload)
         maybe_auto_nudge(agent_payload)
 
+    relay_mylene_active_work_report()
     ops_alerts = summarize_ops_alerts()
     acp_sessions = summarize_acp_sessions()
     mcp_status = build_mcp_status_context(output, acp_sessions, ops_alerts)
