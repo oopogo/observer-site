@@ -2518,7 +2518,10 @@
         panel.innerHTML = `
           <div class="multi-chat-head">
             <div><div class="multi-chat-title">${escapeHtml(agent.name || agentId)}</div><div class="multi-chat-subtitle">${escapeHtml(stateLabel(agent.state, agent))}</div></div>
-            <button class="chat-close" type="button" data-role="close">×</button>
+            <div class="ops-row">
+              <button class="recover-button" type="button" data-role="panel-reports">완료보고</button>
+              <button class="chat-close" type="button" data-role="close">×</button>
+            </div>
           </div>
           <div class="multi-chat-body" data-role="panel-body"><div class="message system">대화 기록을 불러오는 중입니다...</div></div>
           <form class="multi-chat-foot" data-role="panel-form">
@@ -2530,6 +2533,7 @@
         const state = { el: panel, timer: null, sending: false, panelImages: [] };
         openChatPanels.set(agentId, state);
         panel.querySelector('[data-role="close"]').addEventListener('click', () => closeMultiChatPanel(agentId));
+        panel.querySelector('[data-role="panel-reports"]').addEventListener('click', () => openReports(agentId));
         const formEl = panel.querySelector('[data-role="panel-form"]');
         const inputEl = panel.querySelector('[data-role="panel-input"]');
         const previewEl = panel.querySelector('[data-role="panel-preview"]');
@@ -3144,15 +3148,16 @@
         return `<article class="report-item"><button class="report-toggle" type="button"><div class="report-title">${title}</div><div class="report-meta">${completed} · ${result}</div></button><div class="report-detail">${detail}</div></article>`;
       }
 
-      async function openReports() {
-        const agent = latestAgents.find((item) => item.id === selectedAgent) || { id: selectedAgent, name: selectedAgent };
+      async function openReports(agentIdOverride = null) {
+        const reportAgentId = agentIdOverride || selectedAgent || 'main';
+        const agent = latestAgents.find((item) => item.id === reportAgentId) || { id: reportAgentId, name: reportAgentId };
         reportsBackdrop.classList.add('open');
         reportsBackdrop.setAttribute('aria-hidden', 'false');
         reportsTitle.textContent = `${agent.name || agent.id || '선택 에이전트'} 완료보고 목록`;
         reportsSubtitle.textContent = '선택한 에이전트의 완료보고를 봅니다. 항목을 누르면 QA 링크, 검증 로그, 원문을 펼칩니다.';
         reportsList.innerHTML = '<div class="message system">완료보고를 불러오는 중입니다...</div>';
         try {
-          const params = new URLSearchParams({ agentId: selectedAgent || 'main' });
+          const params = new URLSearchParams({ agentId: reportAgentId });
           const res = await fetch(`/api/agent/completion-reports?${params.toString()}`, { cache: 'no-store' });
           const payload = await res.json();
           if (!payload.ok) throw new Error(payload.error || '완료보고 API 오류');
@@ -3163,7 +3168,7 @@
         }
       }
 
-      reportsButton.addEventListener('click', openReports);
+      reportsButton.addEventListener('click', () => openReports(selectedAgent));
       reportsClose.addEventListener('click', closeReports);
       reportsBackdrop.addEventListener('click', (event) => { if (event.target === reportsBackdrop) closeReports(); });
       reportsList.addEventListener('click', (event) => {
