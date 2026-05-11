@@ -2556,21 +2556,54 @@
           return;
         }
         const pills = [
-          `agents ${summary.agents ?? '-'}`,
-          `working ${summary.working ?? '-'}`,
-          `reporting ${summary.reporting ?? '-'}`,
-          `report missing ${summary.reportMissing ?? 0}`,
-          `done/no report ${summary.completedReportMissing ?? 0}`,
-          `ops ${summary.opsCritical ?? 0}/${summary.opsWarning ?? 0}`,
-          `ACP ${summary.acpActive ?? 0} active / ${summary.acpStale ?? 0} stale`,
-          `ACP recover ${summary.acpNeedsRecovery ?? 0}`,
+          `에이전트 ${summary.agents ?? '-'}명`,
+          `작업중 ${summary.working ?? 0}`,
+          `보고대기 ${summary.reporting ?? 0}`,
+          `보고누락 ${summary.reportMissing ?? 0}`,
+          `완료 후 미보고 ${summary.completedReportMissing ?? 0}`,
+          `운영경고 ${summary.opsCritical ?? 0}/${summary.opsWarning ?? 0}`,
+          `ACP 실행 ${summary.acpActive ?? 0} / 고아 ${summary.acpStale ?? 0}`,
+          `ACP 회수필요 ${summary.acpNeedsRecovery ?? 0}`,
         ].map((text) => `<span class="mcp-pill">${escapeHtml(text)}</span>`).join('');
-        box.innerHTML = `<strong>MCP status · ${escapeHtml(mcp.schema || '')}</strong><div class="mcp-grid">${pills}</div>`;
+        box.innerHTML = `<strong>관제 MCP 상태</strong><div class="mcp-grid">${pills}</div>`;
       }
 
       function acpResultHtml() {
         if (!acpLastResult) return '';
         return `<div class="acp-result" role="status" aria-live="polite"><div class="acp-result-title">${escapeHtml(acpLastResult.title || 'ACP 결과')}</div><pre>${escapeHtml(acpLastResult.text || '')}</pre></div>`;
+      }
+
+      function acpStateLabel(state) {
+        if (state === 'running') return '실행 중';
+        if (state === 'stale') return '고아 세션';
+        if (state === 'closed') return '종료됨';
+        return state || '알 수 없음';
+      }
+
+      function shortId(value) {
+        const text = String(value || '');
+        if (!text) return '-';
+        const parts = text.split(':');
+        const tail = parts[parts.length - 1] || text;
+        return tail.length > 8 ? tail.slice(0, 8) : tail;
+      }
+
+      function formatAcpDetail(payload, toolLine = '') {
+        const messages = (payload.messages || []).filter(Boolean);
+        const latest = messages.length ? messages[messages.length - 1].replace(/^(Agent|User|System):\s*/i, '') : '최근 메시지가 없습니다.';
+        const state = payload.closed ? '종료됨' : (payload.pidAlive ? '실행 중' : '고아/대기 없음');
+        return [
+          `상태: ${state}`,
+          `작업 위치: ${payload.cwd || '-'}`,
+          `대화 기록: ${payload.messageCount || 0}개`,
+          `최근 내용: ${latest}`,
+          toolLine ? `도구: ${toolLine}` : '',
+          `원문 ID: ${payload.recordId || '-'}`,
+        ].filter(Boolean).join('\n');
+      }
+
+      function formatAcpRecover(payload, toolLine = '') {
+        return [`회수 요약`, payload.summary || '회수할 내용이 없습니다.', toolLine ? `도구: ${toolLine}` : ''].filter(Boolean).join('\n');
       }
 
       function setAcpResult(title, text) {
@@ -2589,15 +2622,17 @@
           return;
         }
         const top = sessions.slice(0, 5).map((item) => {
-          const state = escapeHtml(item.state || 'unknown');
-          const title = escapeHtml(item.title || item.sessionId || item.recordId || 'ACP session');
-          const cmd = escapeHtml(item.command || '');
-          const cwd = item.cwd ? ` · ${escapeHtml(item.cwd)}` : '';
+          const rawState = item.state || 'unknown';
+          const state = escapeHtml(rawState);
+          const title = escapeHtml(item.title || shortId(item.recordId || item.sessionId) || 'ACP 세션');
+          const cmd = item.command ? ` · 실행기 ${escapeHtml(item.command.replace(/^npx\s+/, ''))}` : '';
+          const cwd = item.cwd ? ` · 위치 ${escapeHtml(item.cwd)}` : '';
           const pid = item.pid ? ` · pid ${escapeHtml(item.pid)}` : '';
+          const messages = ` · 메시지 ${escapeHtml(item.messageCount || 0)}개`;
           const record = escapeHtml(item.recordId || item.sessionId || '');
-          return `<li><span class="acp-state-${state}">${state}</span> — <strong>${title}</strong>${pid}${cwd}${cmd ? `<br>${cmd}` : ''}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
+          return `<li><span class="acp-state-${state}">${escapeHtml(acpStateLabel(rawState))}</span> — <strong>${title}</strong>${messages}${pid}${cwd}${cmd}<div class="acp-actions"><button type="button" data-acp-action="detail" data-record-id="${record}">상세</button><button type="button" data-acp-action="recover" data-record-id="${record}">회수</button><button type="button" data-acp-action="abort" data-record-id="${record}">중단</button></div></li>`;
         }).join('');
-        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0} active / ${acp.stale || 0} stale / ${acp.closed || 0} closed</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">stale 정리</button></div>${acpResultHtml()}`;
+        box.innerHTML = `<strong>ACP 작업 ${acp.active || 0}개 실행 중 / ${acp.stale || 0}개 고아 / ${acp.closed || 0}개 종료</strong><ul>${top}</ul><div class="acp-actions"><button type="button" data-acp-action="spawn">ACP 작업 시작</button><button type="button" data-acp-action="cleanup">고아 정리</button></div>${acpResultHtml()}`;
       }
 
       async function postAcpAction(action, recordId = '') {
@@ -2607,30 +2642,21 @@
           const endpoint = action === 'detail' ? '/api/acp/detail' : (action === 'recover' ? '/api/acp/recover' : '/api/acp/abort');
           const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordId }) });
           const payload = await res.json();
-          const toolLine = payload.mcpTool ? `\nMCP tool: ${payload.mcpTool.tool || '-'} · ${payload.mcpTool.schema || '-'}` : '';
+          const toolLine = payload.mcpTool ? `${payload.mcpTool.tool || '-'} (${payload.mcpTool.schema || '-'})` : '';
           if (!payload.ok) {
             const text = `ACP ${action} 실패: ${payload.error || res.status}${toolLine}`;
             setAcpResult(`ACP ${action} 실패`, text);
             appendSystemMessage(text);
           } else if (action === 'recover') {
-            const text = (payload.summary || 'ACP 회수 완료') + toolLine;
+            const text = formatAcpRecover(payload, toolLine);
             setAcpResult('ACP 회수 결과', text);
             appendSystemMessage(text);
           } else if (action === 'abort') {
-            const text = `ACP 중단 처리 완료: killed=${payload.killed ? 'yes' : 'no'}${toolLine}`;
+            const text = `중단 처리 완료\n프로세스 종료: ${payload.killed ? '실행 중이라 종료함' : '이미 종료돼 있어 추가 종료 없음'}${toolLine ? `\n도구: ${toolLine}` : ''}`;
             setAcpResult('ACP 중단 결과', text);
             appendSystemMessage(text);
           } else {
-            const messages = (payload.messages || []).join('\n---\n');
-            const tail = payload.streamTail ? `
-stream tail:
-${payload.streamTail}` : '';
-            const text = `ACP 상세
-record: ${payload.recordId}
-state: pidAlive=${payload.pidAlive} closed=${payload.closed}
-cwd: ${payload.cwd || '-'}
-messages: ${payload.messageCount || 0}
-${messages}${tail}${toolLine}`.slice(0, 3500);
+            const text = formatAcpDetail(payload, toolLine).slice(0, 3500);
             setAcpResult('ACP 상세 결과', text);
             appendSystemMessage(text);
           }
@@ -2641,9 +2667,9 @@ ${messages}${tail}${toolLine}`.slice(0, 3500);
           if (!window.confirm('실행 중 PID가 없는 stale ACP 세션을 closed로 정리할까요?')) return;
           const res = await fetch('/api/acp/cleanup-stale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
           const payload = await res.json();
-          const toolLine = payload.mcpTool ? ` · MCP ${payload.mcpTool.tool || '-'}` : '';
-          const text = payload.ok ? `ACP stale ${payload.closed || 0}개 정리 완료${toolLine}` : `ACP stale 정리 실패: ${payload.error || res.status}`;
-          setAcpResult('ACP stale 정리 결과', text);
+          const toolLine = payload.mcpTool ? `\n도구: ${payload.mcpTool.tool || '-'}` : '';
+          const text = payload.ok ? `고아 세션 ${payload.closed || 0}개를 종료 상태로 정리했습니다.${toolLine}` : `고아 정리 실패: ${payload.error || res.status}`;
+          setAcpResult('ACP 고아 정리 결과', text);
           appendSystemMessage(text);
           await loadAgents();
           return;
@@ -2659,8 +2685,8 @@ ${messages}${tail}${toolLine}`.slice(0, 3500);
           body: JSON.stringify({ task, label, acpAgentId, cwd, mode: 'session' }),
         });
         const payload = await res.json();
-        const toolLine = payload.mcpTool ? ` · MCP ${payload.mcpTool.tool || '-'}` : '';
-        const text = payload.ok ? `ACP 작업 시작 요청 완료${toolLine}` : `ACP 작업 시작 실패: ${payload.error || res.status}`;
+        const toolLine = payload.mcpTool ? `\n도구: ${payload.mcpTool.tool || '-'}` : '';
+        const text = payload.ok ? `ACP 작업 시작 요청을 observer에게 전달했습니다.\n세션: ${payload.sessionKey || '-'}${toolLine}` : `ACP 작업 시작 실패: ${payload.error || res.status}`;
         setAcpResult('ACP 작업 시작 결과', text);
         appendSystemMessage(text);
         await loadAgents();
