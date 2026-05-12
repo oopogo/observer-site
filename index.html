@@ -703,7 +703,7 @@
         width: min(720px, 100%);
         max-height: min(760px, calc(100vh - 36px));
         display: grid;
-        grid-template-rows: auto 1fr auto;
+        grid-template-rows: auto auto 1fr auto;
         overflow: hidden;
         border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 30px;
@@ -759,6 +759,35 @@
         align-items: center;
         gap: 8px;
       }
+
+      .agent-link-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 20px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+        background: rgba(255,255,255,.026);
+      }
+
+      .agent-link-row.hidden { display: none; }
+
+      .agent-link-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 32px;
+        padding: 0 11px;
+        border: 1px solid rgba(105,215,255,.28);
+        border-radius: 999px;
+        color: #dff7ff;
+        background: rgba(105,215,255,.1);
+        font-size: 12px;
+        font-weight: 850;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .agent-link-button:hover { background: rgba(105,215,255,.18); }
 
       .chat-close {
         width: 38px;
@@ -1643,7 +1672,7 @@
         min-height: 0;
         height: 100%;
         display: grid;
-        grid-template-rows: auto 1fr auto;
+        grid-template-rows: auto auto 1fr auto;
         overflow: hidden;
         border: 1px solid rgba(255,255,255,.13);
         border-radius: 24px;
@@ -1662,6 +1691,8 @@
 
       .multi-chat-title { font-weight: 900; }
       .multi-chat-subtitle { color: var(--muted); font-size: 11px; margin-top: 2px; }
+      .multi-chat-panel .agent-link-row { padding: 8px 12px; gap: 6px; }
+      .multi-chat-panel .agent-link-button { min-height: 28px; padding: 0 9px; font-size: 11px; }
 
       .multi-chat-body {
         min-height: 0;
@@ -1837,6 +1868,7 @@
               <button class="chat-close" type="button" id="chatClose" aria-label="대화창 닫기">×</button>
             </div>
           </div>
+          <div class="agent-link-row hidden" id="agentLinkRow"></div>
           <div class="chat-body" id="chatBody">
             <div class="message system">에이전트를 선택하면 여기서 업무를 전달하게 됩니다.</div>
           </div>
@@ -1910,6 +1942,7 @@
       const subtitle = document.getElementById('chatSubtitle');
       const orb = document.getElementById('chatOrb');
       const body = document.getElementById('chatBody');
+      const agentLinkRow = document.getElementById('agentLinkRow');
       const form = document.getElementById('chatForm');
       const input = document.getElementById('chatInput');
       const idleAgents = document.getElementById('idleAgents');
@@ -1931,9 +1964,34 @@
       const workingLabel = document.getElementById('workingLabel');
       const buildNote = document.getElementById('buildNote');
       const MOBILE_CHAT_QUERY = '(hover: none) and (pointer: coarse), (max-width: 720px)';
+      const AGENT_MAIN_LINKS = {
+        main: [
+          { label: 'QA 리포트 목록', url: 'https://rogueqa.megagrit-ai.com/qa/reports/' },
+          { label: '로그001 게임', url: 'https://roguegame.megagrit-ai.com/' },
+        ],
+        lina: [
+          { label: '작업물 리포트', url: 'https://content.megagrit-ai.com/ai-game-001/index.html' },
+          { label: 'AI_Game_001', url: 'https://aigame001.megagrit-ai.com/' },
+        ],
+        mediacontentproducer: [
+          { label: 'YouTube 채널', url: 'https://www.youtube.com/channel/UClqUGoXW104HEOG0Pb3L7Zw' },
+        ],
+      };
 
       function isMobileChatInput() {
         return window.matchMedia && window.matchMedia(MOBILE_CHAT_QUERY).matches;
+      }
+
+      function agentMainLinksHtml(agentId) {
+        const links = AGENT_MAIN_LINKS[agentId] || [];
+        return links.map((link) => `<a class="agent-link-button" href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link.label)}</a>`).join('');
+      }
+
+      function renderAgentLinkRow(row, agentId) {
+        if (!row) return;
+        const html = agentMainLinksHtml(agentId);
+        row.innerHTML = html;
+        row.classList.toggle('hidden', !html);
       }
       const detailButton = document.getElementById('detailButton');
       const reportsButton = document.getElementById('reportsButton');
@@ -2531,6 +2589,7 @@
               <button class="chat-close" type="button" data-role="close">×</button>
             </div>
           </div>
+          <div class="agent-link-row ${agentMainLinksHtml(agentId) ? '' : 'hidden'}">${agentMainLinksHtml(agentId)}</div>
           <div class="multi-chat-body" data-role="panel-body"><div class="message system">대화 기록을 불러오는 중입니다...</div></div>
           <form class="multi-chat-foot" data-role="panel-form">
             <div class="paste-preview" data-role="panel-preview"></div>
@@ -2950,6 +3009,7 @@
           orb.textContent = (agent && agent.orb) || ((agent && agent.name) || selectedAgent).slice(0, 1);
         }
         orb.classList.toggle('work', accent === 'work');
+        renderAgentLinkRow(agentLinkRow, nextAgent);
         backdrop.classList.add('open');
         backdrop.setAttribute('aria-hidden', 'false');
         pushOverlayHistory('chat');
