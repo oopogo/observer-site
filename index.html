@@ -1930,6 +1930,11 @@
       const idleLabel = document.getElementById('idleLabel');
       const workingLabel = document.getElementById('workingLabel');
       const buildNote = document.getElementById('buildNote');
+      const MOBILE_CHAT_QUERY = '(hover: none) and (pointer: coarse), (max-width: 720px)';
+
+      function isMobileChatInput() {
+        return window.matchMedia && window.matchMedia(MOBILE_CHAT_QUERY).matches;
+      }
       const detailButton = document.getElementById('detailButton');
       const reportsButton = document.getElementById('reportsButton');
       const reportsBackdrop = document.getElementById('reportsBackdrop');
@@ -2529,7 +2534,7 @@
           <div class="multi-chat-body" data-role="panel-body"><div class="message system">대화 기록을 불러오는 중입니다...</div></div>
           <form class="multi-chat-foot" data-role="panel-form">
             <div class="paste-preview" data-role="panel-preview"></div>
-            <textarea class="multi-chat-input" data-role="panel-input" placeholder="Enter 전송, Shift+Enter 줄바꿈 / 이미지 붙여넣기 가능"></textarea>
+            <textarea class="multi-chat-input" data-role="panel-input" placeholder="모바일은 Enter 줄바꿈 / 보내기 버튼으로 전송"></textarea>
             <button class="chat-send" type="submit">보내기</button>
           </form>`;
         multiChatGrid.appendChild(panel);
@@ -2546,6 +2551,7 @@
         inputEl.addEventListener('paste', handlePanelPaste);
         panel.querySelector('[data-role="panel-body"]').addEventListener('paste', handlePanelPaste);
         inputEl.addEventListener('keydown', (event) => {
+          if (isMobileChatInput()) return;
           if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
           event.preventDefault();
           if (typeof formEl.requestSubmit === 'function') formEl.requestSubmit();
@@ -3352,6 +3358,7 @@
       body.addEventListener('paste', handlePasteImages);
 
       input.addEventListener('keydown', (event) => {
+        if (isMobileChatInput()) return;
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
         event.preventDefault();
         if (typeof form.requestSubmit === 'function') form.requestSubmit();
