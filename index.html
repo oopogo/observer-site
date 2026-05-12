@@ -614,17 +614,6 @@
         line-height: 1.35;
       }
 
-      .pill {
-        display: inline-flex;
-        align-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.13);
-        border-radius: 999px;
-        padding: 3px 8px;
-        color: #cbd6ea;
-        font-size: 11px;
-        font-weight: 700;
-      }
-
       .flow {
         position: absolute;
         inset: 88px 50% auto auto;
@@ -2230,7 +2219,7 @@
           <span class="state-badge ${stateBadgeClass(agent.state, agent)}">${stateLabel(agent.state, agent)}</span>
           <div class="orb">${orbContent}</div>
           <div>
-            <div class="name">${escapeHtml(agent.name)} <span class="pill">${stateLabel(agent.state, agent)}</span></div>
+            <div class="name">${escapeHtml(agent.name)}</div>
             <div class="status">${escapeHtml(agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중')))}</div>
             ${renderContextBattery(agent)}
             ${renderTags(agent)}
