@@ -975,6 +975,15 @@
         white-space: nowrap;
       }
 
+      .recover-button.icon-only {
+        min-width: 40px;
+        width: 40px;
+        padding: 0;
+        border-radius: 999px;
+        font-size: 17px;
+        line-height: 1;
+      }
+
       .recover-button.danger {
         color: #ffd0da;
         background: rgba(255, 107, 138, 0.10);
@@ -987,8 +996,13 @@
         gap: 8px;
       }
 
+      .chat-foot > .ops-row:not(.management-row) {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) 40px;
+        align-items: stretch;
+      }
+
       .ops-row.management-row {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         margin-top: -2px;
       }
 
@@ -1847,7 +1861,7 @@
               <button class="recover-button" type="button" id="detailButton">로그</button>
               <button class="recover-button" type="button" id="reportsButton">완료보고</button>
               <button class="recover-button" type="button" id="wakeCheckButton">깨우기/회수</button>
-              <button class="recover-button" type="button" id="manageButton">관리</button>
+              <button class="recover-button icon-only" type="button" id="manageButton" aria-label="관리" title="관리" aria-expanded="false">⚙</button>
             </div>
             <div class="management-panel hidden" id="managementPanel">
               <div class="ops-row management-row">
@@ -3123,7 +3137,9 @@
 
       manageButton.addEventListener('click', () => {
         managementPanel.classList.toggle('hidden');
-        manageButton.textContent = managementPanel.classList.contains('hidden') ? '관리' : '관리 닫기';
+        const open = !managementPanel.classList.contains('hidden');
+        manageButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+        manageButton.classList.toggle('active', open);
       });
 
       function closeReports() {
