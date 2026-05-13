@@ -763,11 +763,22 @@ def observer_chat_session_key(agent_id: str) -> str:
     return observer_chat_session_key_from_rows(agent_id, existing_agent_session_keys(agent_id))
 
 
+def effective_context_max_tokens(row: dict[str, Any] | None) -> int:
+    if not isinstance(row, dict):
+        return DEFAULT_CONTEXT_MAX_TOKENS
+    context_max_tokens = int(float(row.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS)
+    model = str(row.get("model") or "")
+    provider = str(row.get("modelProvider") or "")
+    if model.startswith("gpt-5") or provider == "openai-codex":
+        context_max_tokens = max(context_max_tokens, DEFAULT_CONTEXT_MAX_TOKENS)
+    return context_max_tokens
+
+
 def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
     if not isinstance(row, dict):
         return 0.0
     total = float(row.get("totalTokens") or 0)
-    ctx = float(row.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS or 0)
+    ctx = float(effective_context_max_tokens(row) or 0)
     return total / ctx if ctx > 0 else 0.0
 
 
@@ -2903,11 +2914,9 @@ def summarize_agents() -> dict[str, Any]:
 
         latest_updated = current_updated
         context_tokens = int(float(context_source.get("totalTokens") or 0) or 0) if context_source else 0
-        context_max_tokens = int(float(context_source.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS) if context_source else DEFAULT_CONTEXT_MAX_TOKENS
+        context_max_tokens = effective_context_max_tokens(context_source)
         current_model = str(context_source.get("model") or "") if context_source else ""
         current_provider = str(context_source.get("modelProvider") or "") if context_source else ""
-        if current_model.startswith("gpt-5") or current_provider == "openai-codex":
-            context_max_tokens = max(context_max_tokens, DEFAULT_CONTEXT_MAX_TOKENS)
         context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
         status_text = "응답 가능"
         if state == "working":
