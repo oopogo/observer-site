@@ -2040,11 +2040,33 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 7000;
-      const BUILD_ID = '2026-05-09-2259';
+      const BUILD_ID = '2026-05-14-1244';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
         return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+      }
+
+      async function readJsonResponse(res, label = 'API') {
+        const contentType = res.headers.get('content-type') || '';
+        const text = await res.text();
+        if (!contentType.includes('application/json')) {
+          const lowered = text.toLowerCase();
+          if (res.redirected || lowered.includes('cloudflareaccess') || lowered.includes('/cdn-cgi/access/login') || lowered.includes('<html')) {
+            throw new Error(`${label}: Cloudflare Access 로그인 세션이 만료됐거나 HTML 로그인/오류 페이지를 받았습니다. 페이지를 새로고침하고 다시 로그인해 주세요.`);
+          }
+          throw new Error(`${label}: JSON이 아닌 응답을 받았습니다. HTTP ${res.status} ${res.statusText || ''}`.trim());
+        }
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch (error) {
+          throw new Error(`${label}: JSON 파싱 실패 (${error})`);
+        }
+        if (!res.ok) {
+          throw new Error(payload.error || `${label}: HTTP ${res.status}`);
+        }
+        return payload;
       }
 
       function isInternalStatusMessage(text) {
@@ -2893,7 +2915,7 @@
       async function loadGatewayStatus() {
         try {
           const res = await fetch('/api/gateway-status', { cache: 'no-store' });
-          const payload = await res.json();
+          const payload = await readJsonResponse(res, '게이트웨이 상태');
           renderGatewayStatus(payload);
         } catch (error) {
           renderGatewayStatus({ ok: false, error: String(error) });
@@ -2928,7 +2950,7 @@
         agentsLoading = true;
         try {
           const res = await fetch('/api/agents', { cache: 'no-store' });
-          const payload = await res.json();
+          const payload = await readJsonResponse(res, '에이전트 상태');
           if (!payload.ok) throw new Error(payload.error || '상태 조회 실패');
           renderAgents(payload);
         } catch (error) {
@@ -2975,7 +2997,7 @@
         if (markRead) params.set('markRead', '1');
         if (sync) params.set('sync', '1');
         const res = await fetch(`/api/chat/history?${params.toString()}`, { cache: 'no-store' });
-        const payload = await res.json();
+        const payload = await readJsonResponse(res, '대화 기록');
         if (!payload.ok) throw new Error(payload.error || '대화 기록 조회 실패');
         return payload.messages || [];
       }
