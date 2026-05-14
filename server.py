@@ -11,6 +11,7 @@ import base64
 import binascii
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -59,6 +60,8 @@ AGENTS = [
     {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
 CACHE_TTL_SECONDS = 8
+GATEWAY_CACHE_TTL_SECONDS = 30
+GATEWAY_SESSION_SUMMARY_ENABLED = False
 MAX_SETTINGS_BODY_BYTES = 16_000_000
 MAX_CHAT_IMAGE_BYTES = 8_000_000
 MAX_CHAT_IMAGES = 6
@@ -68,6 +71,8 @@ SESSIONS_CACHE: dict[str, Any] | None = None
 HISTORY_SYNC_TS: dict[str, float] = {}
 SANITIZE_SYNC_TS = 0.0
 CACHE_LOCK = threading.Lock()
+AGENTS_REFRESH_LOCK = threading.Lock()
+SESSIONS_REFRESH_LOCK = threading.Lock()
 
 NUDGE_PATH = DATA_DIR / "recovery-nudges.json"
 NUDGE_INTERVAL_SECONDS = 900
@@ -88,7 +93,7 @@ CONTEXT_ROLLOVER_RATIO = 0.95
 SILENCE_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
-SILENCE_AUTO_NUDGE_ENABLED = True
+SILENCE_AUTO_NUDGE_ENABLED = False
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -120,22 +125,35 @@ def invalidate_agents_cache() -> None:
 
 def get_sessions_cached(timeout: int = 12) -> list[dict[str, Any]]:
     cached = cache_get("sessions")
-    if cache_is_fresh(cached):
-        sessions = cached.get("sessions") if isinstance(cached, dict) else []
-        return sessions if isinstance(sessions, list) else []
-    payload = gateway_call("sessions.list", {"limit": 120}, timeout=timeout)
-    sessions = payload.get("sessions") if isinstance(payload, dict) else []
+    sessions = cached.get("sessions") if isinstance(cached, dict) else []
     if not isinstance(sessions, list):
         sessions = []
-    cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions})
-    return sessions
+    if not GATEWAY_SESSION_SUMMARY_ENABLED:
+        return sessions
+    if cache_is_fresh(cached):
+        return sessions
+    if not SESSIONS_REFRESH_LOCK.acquire(blocking=False):
+        return sessions
+    try:
+        cached = cache_get("sessions")
+        if cache_is_fresh(cached):
+            sessions = cached.get("sessions") if isinstance(cached, dict) else []
+            return sessions if isinstance(sessions, list) else []
+        payload = gateway_call("sessions.list", {"limit": 120}, timeout=timeout)
+        sessions = payload.get("sessions") if isinstance(payload, dict) else []
+        if not isinstance(sessions, list):
+            sessions = []
+        cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions})
+        return sessions
+    finally:
+        SESSIONS_REFRESH_LOCK.release()
 
 
-def cache_is_fresh(payload: dict[str, Any] | None) -> bool:
+def cache_is_fresh(payload: dict[str, Any] | None, ttl_seconds: int = CACHE_TTL_SECONDS) -> bool:
     if not payload:
         return False
     age_ms = int(time.time() * 1000) - int(payload.get("generatedAt") or 0)
-    return age_ms <= CACHE_TTL_SECONDS * 1000
+    return age_ms <= ttl_seconds * 1000
 
 
 def stale_payload(name: str, error: Exception) -> dict[str, Any] | None:
@@ -555,8 +573,29 @@ def update_work_item(agent_id: str, request_id: str, status: str, *, report: boo
         save_work_state(data)
 
 
+def is_final_work_report_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or is_internal_status_text(value):
+        return False
+    lowered = value.lower()
+    nonfinal_markers = (
+        "아직 완료라고 하면 안", "완료라고 하면 안", "완료는 아닙니다", "완료가 아닙니다",
+        "남아 있", "남았습니다", "마무리하겠습니다", "진행하겠습니다", "진행합니다",
+        "작성하겠습니다", "만들겠습니다", "확인하겠습니다", "바로 마무리", "지금 바로",
+        "우선 실제", "실패 우회", "작업 중", "진행 중",
+    )
+    if any(marker in value for marker in nonfinal_markers):
+        return False
+    if value.startswith("시작보고") or value.startswith("시작 보고"):
+        return False
+    # If it is not an explicit progress/plan/blocked-in-progress message, treat
+    # the visible answer as a valid user-facing report. Some requests are
+    # explanatory ("정리해봐") and should not require commit/QA artifacts.
+    return True
+
+
 def close_latest_active_work_from_report(agent_id: str, session_key: str, text: str, ts: int | None = None) -> bool:
-    if not text or is_internal_status_text(text) or is_progress_only_report_text(text):
+    if not text or not is_final_work_report_text(text):
         return False
     now = int(time.time() * 1000)
     report_ts = ts or now
@@ -1284,6 +1323,9 @@ def is_simple_ping_or_test(message: str, attachments: list[dict[str, Any]] | Non
         "ping", "핑", "확인", "응답해", "뭐야", "왜", "왜그래", "이미지테스트",
         "안녕", "안녕하세요", "ㅎㅇ", "하이", "hello", "hi",
     }
+    done_check_markers = ("다했", "다해", "끝났", "완료", "보고", "됐어", "됬어")
+    if any(marker in normalized for marker in done_check_markers):
+        return False
     return normalized in simple or (not attachments and text.endswith("?") and len(normalized) <= 10)
 
 
@@ -1467,7 +1509,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         )
         if fallback_used:
             update_work_item(agent_id, request_id, "failed", report=True, reason="empty/internal assistant response")
-        elif is_progress_only_report_text(text):
+        elif is_progress_only_report_text(text) or not is_final_work_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
             update_work_item(agent_id, request_id, "failed", report=True, reason=text)
@@ -1849,34 +1891,42 @@ def normalize_status(raw: str | None) -> str:
 
 
 def summarize_gateway_status() -> dict[str, Any]:
-    args = [OPENCLAW_BIN, "gateway", "status"]
-    env = os.environ.copy()
-    env.pop("OPENCLAW_GATEWAY_URL", None)
-    env.pop("OPENCLAW_API_URL", None)
-    env["NO_COLOR"] = "1"
     generated = int(time.time() * 1000)
     started = time.time()
-    result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=14)
+    host = "127.0.0.1"
+    port = 18789
+    runtime = "unknown"
+    try:
+        show = subprocess.run(
+            ["systemctl", "--user", "show", "openclaw-gateway.service", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        fields = dict(line.split("=", 1) for line in show.stdout.splitlines() if "=" in line)
+        runtime = f"{fields.get('ActiveState', 'unknown')} / {fields.get('SubState', 'unknown')} / pid {fields.get('MainPID', '0')}"
+    except Exception as exc:
+        runtime = f"systemd 확인 지연: {exc}"
+    probe_value = "unknown"
+    ok = False
+    try:
+        with socket.create_connection((host, port), timeout=1.2):
+            probe_value = "tcp ok"
+            ok = "active" in runtime and "running" in runtime
+    except Exception as exc:
+        probe_value = f"tcp fail: {exc}"
     elapsed_ms = int((time.time() - started) * 1000)
-    raw = (result.stdout or result.stderr or "").strip()
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    runtime = next((line for line in lines if line.startswith("Runtime:")), "Runtime: unknown")
-    probe = next((line for line in lines if line.startswith("Connectivity probe:")), "Connectivity probe: unknown")
-    gateway = next((line for line in lines if line.startswith("Gateway:")), "Gateway: unknown")
-    listening = next((line for line in lines if line.startswith("Listening:")), None)
-    log_line = next((line for line in lines if line.startswith("File logs:")), None)
-    ok = result.returncode == 0 and "running" in runtime.lower() and "ok" in probe.lower()
     return {
         "ok": ok,
         "state": "ok" if ok else "warning",
         "generatedAt": generated,
         "latencyMs": elapsed_ms,
-        "runtime": runtime.replace("Runtime:", "", 1).strip(),
-        "probe": probe.replace("Connectivity probe:", "", 1).strip(),
-        "gateway": gateway.replace("Gateway:", "", 1).strip(),
-        "listening": listening.replace("Listening:", "", 1).strip() if listening else None,
-        "logs": log_line.replace("File logs:", "", 1).strip() if log_line else None,
-        "raw": lines[:18],
+        "runtime": runtime,
+        "probe": probe_value,
+        "gateway": f"bind=loopback ({host}), port={port}",
+        "listening": f"{host}:{port}",
+        "logs": "/tmp/openclaw/openclaw-*.log",
+        "raw": [f"Runtime: {runtime}", f"Connectivity probe: {probe_value}", f"Listening: {host}:{port}"],
     }
 
 
@@ -3342,15 +3392,22 @@ class Handler(SimpleHTTPRequestHandler):
             if cache_is_fresh(cached):
                 self.json_response(cached)
                 return
-            try:
-                payload = cache_set("agents", summarize_agents())
-            except Exception as exc:  # keep UI alive with last known good state
-                payload = stale_payload("agents", exc)
+            if not AGENTS_REFRESH_LOCK.acquire(blocking=False):
+                payload = stale_payload("agents", RuntimeError("상태 갱신 중입니다. 중복 조회를 캐시로 대체합니다."))
                 if not payload:
-                    payload = {"ok": False, "error": str(exc), "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
-                    self.json_response(payload, 502)
-                    return
-            self.json_response(payload)
+                    payload = {"ok": True, "stale": True, "warning": "상태 갱신 중입니다.", "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
+                self.json_response(payload, 200)
+                return
+            try:
+                try:
+                    payload = cache_set("agents", summarize_agents())
+                except Exception as exc:  # keep UI alive with last known good state
+                    payload = stale_payload("agents", exc)
+                    if not payload:
+                        payload = {"ok": True, "stale": True, "warning": str(exc), "generatedAt": int(time.time() * 1000), "agents": [], "counts": {"total": 0, "idle": 0, "working": 0, "warning": 0}}
+                self.json_response(payload, 200)
+            finally:
+                AGENTS_REFRESH_LOCK.release()
             return
         if path == "/api/mcp/status":
             try:
@@ -3376,7 +3433,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/gateway-status":
             cached = cache_get("gateway")
-            if cache_is_fresh(cached):
+            if cache_is_fresh(cached, GATEWAY_CACHE_TTL_SECONDS):
                 self.json_response(cached)
                 return
             try:
@@ -3385,9 +3442,9 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = stale_payload("gateway", exc)
                 if not payload:
                     payload = {"ok": False, "state": "warning", "error": str(exc), "generatedAt": int(time.time() * 1000)}
-                    self.json_response(payload, 503)
+                    self.json_response(payload, 200)
                     return
-            self.json_response(payload, 200 if payload.get("ok") else 503)
+            self.json_response(payload, 200)
             return
         super().do_GET()
 
