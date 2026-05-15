@@ -92,7 +92,41 @@
         display: grid;
         grid-template-columns: minmax(0, 1.25fr) repeat(3, minmax(0, .75fr));
         gap: 12px;
-        margin-bottom: 14px;
+        margin-bottom: 12px;
+      }
+
+      .gateway-health-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin: -2px 0 14px;
+      }
+
+      .gateway-health-card {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 18px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .gateway-health-card.warn {
+        border-color: rgba(255, 184, 107, 0.45);
+        background: rgba(120, 53, 15, 0.18);
+      }
+
+      .gateway-health-label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 850;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      .gateway-health-value {
+        margin-top: 5px;
+        font-size: 14px;
+        font-weight: 850;
+        letter-spacing: -.02em;
       }
 
       .gateway-card {
@@ -1777,6 +1811,13 @@
         </div>
       </section>
 
+      <section class="gateway-health-strip" aria-label="게이트웨이 헬스">
+        <div class="gateway-health-card" id="gatewayCpuCard"><div class="gateway-health-label">CPU</div><div class="gateway-health-value" id="gatewayCpu">-</div></div>
+        <div class="gateway-health-card" id="gatewayMemoryCard"><div class="gateway-health-label">RSS 메모리</div><div class="gateway-health-value" id="gatewayMemory">-</div></div>
+        <div class="gateway-health-card" id="gatewayCallsCard"><div class="gateway-health-label">Gateway Call</div><div class="gateway-health-value" id="gatewayCalls">-</div></div>
+        <div class="gateway-health-card" id="gatewayHealthCard"><div class="gateway-health-label">부하 경고</div><div class="gateway-health-value" id="gatewayHealth">-</div></div>
+      </section>
+
       <section class="summary" id="statusSummary" aria-label="상태별 요약">
         <div class="metric"><strong id="countIdle">-</strong><span>대기</span></div>
         <div class="metric"><strong id="countAssigned">-</strong><span>응답 대기</span></div>
@@ -1953,6 +1994,14 @@
       const gatewayProbe = document.getElementById('gatewayProbe');
       const gatewayEndpoint = document.getElementById('gatewayEndpoint');
       const gatewayLatency = document.getElementById('gatewayLatency');
+      const gatewayCpuCard = document.getElementById('gatewayCpuCard');
+      const gatewayMemoryCard = document.getElementById('gatewayMemoryCard');
+      const gatewayCallsCard = document.getElementById('gatewayCallsCard');
+      const gatewayHealthCard = document.getElementById('gatewayHealthCard');
+      const gatewayCpu = document.getElementById('gatewayCpu');
+      const gatewayMemory = document.getElementById('gatewayMemory');
+      const gatewayCalls = document.getElementById('gatewayCalls');
+      const gatewayHealth = document.getElementById('gatewayHealth');
       const countIdle = document.getElementById('countIdle');
       const countAssigned = document.getElementById('countAssigned');
       const countReporting = document.getElementById('countReporting');
@@ -2904,12 +2953,23 @@
 
       function renderGatewayStatus(payload) {
         const ok = Boolean(payload && payload.ok);
+        const health = payload && payload.health ? payload.health : {};
+        const warnings = Array.isArray(health.warnings) ? health.warnings : [];
+        const hasHealthWarning = warnings.length > 0 || payload?.state === 'warning';
         gatewayRuntimeCard.classList.toggle('warn', !ok);
         gatewayProbeCard.classList.toggle('warn', !ok);
+        gatewayCpuCard.classList.toggle('warn', Number(health.cpuPercent || 0) >= 50);
+        gatewayMemoryCard.classList.toggle('warn', Number(health.rssMb || 0) >= 1024);
+        gatewayCallsCard.classList.toggle('warn', Number(health.gatewayCallProcesses || 0) > 0);
+        gatewayHealthCard.classList.toggle('warn', hasHealthWarning);
         gatewayRuntime.textContent = ok ? `정상 · ${koreanRuntime(payload.runtime)}` : `점검 필요 · ${payload.error || koreanRuntime(payload.runtime) || '알 수 없음'}`;
         gatewayProbe.textContent = koreanProbe(payload.probe || (ok ? 'ok' : 'unknown'));
         gatewayEndpoint.textContent = payload.listening || payload.gateway || '127.0.0.1:18789';
         gatewayLatency.textContent = typeof payload.latencyMs === 'number' ? `${payload.latencyMs}ms` : '-';
+        gatewayCpu.textContent = typeof health.cpuPercent === 'number' ? `${health.cpuPercent}%` : '-';
+        gatewayMemory.textContent = typeof health.rssMb === 'number' ? `${health.rssMb}MB` : '-';
+        gatewayCalls.textContent = `${Number(health.gatewayCallProcesses || 0)}개`;
+        gatewayHealth.textContent = warnings.length ? warnings.slice(0, 2).join(' · ') : '정상';
       }
 
       async function loadGatewayStatus() {

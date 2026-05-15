@@ -1890,12 +1890,57 @@ def normalize_status(raw: str | None) -> str:
     return "idle"
 
 
+def gateway_process_health(pid: int) -> dict[str, Any]:
+    health = {"pid": pid, "cpuPercent": None, "rssMb": None, "elapsed": "-", "gatewayCallProcesses": 0, "warnings": []}
+    if pid <= 0:
+        health["warnings"].append("gateway pid unknown")
+        return health
+    try:
+        ps = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "pcpu=,rss=,etime="],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+        line = ps.stdout.strip()
+        if line:
+            parts = line.split(None, 2)
+            health["cpuPercent"] = round(float(parts[0]), 1)
+            health["rssMb"] = round(float(parts[1]) / 1024, 1)
+            health["elapsed"] = parts[2] if len(parts) > 2 else "-"
+    except Exception as exc:
+        health["warnings"].append(f"ps check delayed: {exc}")
+    try:
+        proc = subprocess.run(
+            ["ps", "-eo", "cmd="],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+        calls = [line for line in proc.stdout.splitlines() if "openclaw gateway call" in line]
+        health["gatewayCallProcesses"] = len(calls)
+    except Exception as exc:
+        health["warnings"].append(f"gateway call process check delayed: {exc}")
+    cpu = health.get("cpuPercent")
+    rss = health.get("rssMb")
+    calls = int(health.get("gatewayCallProcesses") or 0)
+    if isinstance(cpu, (int, float)) and cpu >= 50:
+        health["warnings"].append(f"high cpu {cpu}%")
+    if isinstance(rss, (int, float)) and rss >= 1024:
+        health["warnings"].append(f"high rss {rss}MB")
+    if calls > 0:
+        health["warnings"].append(f"gateway call processes {calls}")
+    health["state"] = "warning" if health["warnings"] else "ok"
+    return health
+
+
 def summarize_gateway_status() -> dict[str, Any]:
     generated = int(time.time() * 1000)
     started = time.time()
     host = "127.0.0.1"
     port = 18789
     runtime = "unknown"
+    pid = 0
     try:
         show = subprocess.run(
             ["systemctl", "--user", "show", "openclaw-gateway.service", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"],
@@ -1904,7 +1949,8 @@ def summarize_gateway_status() -> dict[str, Any]:
             timeout=1.5,
         )
         fields = dict(line.split("=", 1) for line in show.stdout.splitlines() if "=" in line)
-        runtime = f"{fields.get('ActiveState', 'unknown')} / {fields.get('SubState', 'unknown')} / pid {fields.get('MainPID', '0')}"
+        pid = int(fields.get("MainPID", "0") or 0)
+        runtime = f"{fields.get('ActiveState', 'unknown')} / {fields.get('SubState', 'unknown')} / pid {pid}"
     except Exception as exc:
         runtime = f"systemd 확인 지연: {exc}"
     probe_value = "unknown"
@@ -1916,9 +1962,14 @@ def summarize_gateway_status() -> dict[str, Any]:
     except Exception as exc:
         probe_value = f"tcp fail: {exc}"
     elapsed_ms = int((time.time() - started) * 1000)
+    health = gateway_process_health(pid)
+    if elapsed_ms >= 1000:
+        health.setdefault("warnings", []).append(f"slow status probe {elapsed_ms}ms")
+        health["state"] = "warning"
+    state = "ok" if ok and health.get("state") != "warning" else "warning"
     return {
         "ok": ok,
-        "state": "ok" if ok else "warning",
+        "state": state,
         "generatedAt": generated,
         "latencyMs": elapsed_ms,
         "runtime": runtime,
@@ -1926,6 +1977,7 @@ def summarize_gateway_status() -> dict[str, Any]:
         "gateway": f"bind=loopback ({host}), port={port}",
         "listening": f"{host}:{port}",
         "logs": "/tmp/openclaw/openclaw-*.log",
+        "health": health,
         "raw": [f"Runtime: {runtime}", f"Connectivity probe: {probe_value}", f"Listening: {host}:{port}"],
     }
 
