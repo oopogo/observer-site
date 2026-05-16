@@ -68,6 +68,7 @@ MAX_CHAT_IMAGES = 6
 AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
 SESSIONS_CACHE: dict[str, Any] | None = None
+GATEWAY_CPU_SAMPLE: dict[int, tuple[int, int]] = {}
 HISTORY_SYNC_TS: dict[str, float] = {}
 SANITIZE_SYNC_TS = 0.0
 CACHE_LOCK = threading.Lock()
@@ -1890,6 +1891,40 @@ def normalize_status(raw: str | None) -> str:
     return "idle"
 
 
+def read_total_cpu_jiffies() -> int | None:
+    try:
+        parts = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+        return sum(int(value) for value in parts)
+    except Exception:
+        return None
+
+
+def read_process_cpu_jiffies(pid: int) -> int | None:
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+        rest = text.rsplit(")", 1)[1].split()
+        return int(rest[11]) + int(rest[12])
+    except Exception:
+        return None
+
+
+def recent_process_cpu_percent(pid: int) -> float | None:
+    total = read_total_cpu_jiffies()
+    proc = read_process_cpu_jiffies(pid)
+    if total is None or proc is None:
+        return None
+    previous = GATEWAY_CPU_SAMPLE.get(pid)
+    GATEWAY_CPU_SAMPLE[pid] = (total, proc)
+    if not previous:
+        return None
+    prev_total, prev_proc = previous
+    total_delta = max(0, total - prev_total)
+    proc_delta = max(0, proc - prev_proc)
+    if total_delta <= 0:
+        return None
+    return round((proc_delta / total_delta) * max(1, os.cpu_count() or 1) * 100, 1)
+
+
 def gateway_process_health(pid: int) -> dict[str, Any]:
     health = {"pid": pid, "cpuPercent": None, "rssMb": None, "elapsed": "-", "gatewayCallProcesses": 0, "warnings": []}
     if pid <= 0:
@@ -1897,17 +1932,19 @@ def gateway_process_health(pid: int) -> dict[str, Any]:
         return health
     try:
         ps = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "pcpu=,rss=,etime="],
+            ["ps", "-p", str(pid), "-o", "rss=,etime="],
             capture_output=True,
             text=True,
             timeout=1.0,
         )
         line = ps.stdout.strip()
         if line:
-            parts = line.split(None, 2)
-            health["cpuPercent"] = round(float(parts[0]), 1)
-            health["rssMb"] = round(float(parts[1]) / 1024, 1)
-            health["elapsed"] = parts[2] if len(parts) > 2 else "-"
+            parts = line.split(None, 1)
+            health["rssMb"] = round(float(parts[0]) / 1024, 1)
+            health["elapsed"] = parts[1] if len(parts) > 1 else "-"
+        recent_cpu = recent_process_cpu_percent(pid)
+        if recent_cpu is not None:
+            health["cpuPercent"] = recent_cpu
     except Exception as exc:
         health["warnings"].append(f"ps check delayed: {exc}")
     try:
