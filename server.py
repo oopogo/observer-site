@@ -95,7 +95,7 @@ SILENCE_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
 SILENCE_AUTO_NUDGE_ENABLED = False
-OBSERVER_WORK_CHAT_DISABLED = True
+OBSERVER_WORK_CHAT_DISABLED = False
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1499,8 +1499,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
                 text = strip_internal_report_contract(final_text)
         fallback_used = False
         if not text or is_internal_status_text(text):
-            reason = compact_report_line(text or "empty", 120)
-            text = build_harness_status_reply(agent_id, agent_name, session_key, message, request_start_ms, reason)
+            text = "응답을 못 받았습니다. 다시 짧게 물어보거나 지시해 주세요."
             fallback_used = True
         replace_history_message(
             agent_id,
@@ -1582,15 +1581,7 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
     if is_work_request_message(message, saved_attachments):
         register_work_item(agent_id, request_id, outbound_message, session_key)
-    report_contract = (
-        "\n\n[관제 보고 규칙] "
-        "작업 요청이면 시작보고와 완료보고를 구분하세요. "
-        "'시작합니다/진행하겠습니다/완료되면 보고하겠습니다'는 완료가 아닙니다. "
-        "최종 산출물, 검증 결과, 실패/차단 사유를 사용자에게 보고해야 일이 완료됩니다. "
-        "이전 관제 대화 요약/최근 완료보고 후보가 포함된 새 세션 이어받기에서는 세션이 바뀌었더라도 같은 대화로 취급하세요. "
-        "사용자가 완료보고가 안 보인다고 하거나 확인 결과를 요구하면, 이전 세션 탓만 하지 말고 현재 채팅에 완료보고를 즉시 재게시하세요."
-    )
-    outbound_for_worker = f"{outbound_message}{report_contract}"
+    outbound_for_worker = outbound_message
     worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_for_worker, request_id), daemon=True)
     worker.start()
     history_payload = public_history(agent_id, mark_read=False)
