@@ -1162,7 +1162,7 @@ def wait_for_agent_reply(session_key: str, after_ms: int, timeout_seconds: int =
         text = latest_assistant_text_from_session(session_key, after_ms)
         if text:
             return text
-        time.sleep(1.0)
+        time.sleep(5.0)
     return None
 
 
@@ -1176,7 +1176,7 @@ def wait_for_non_progress_agent_reply(session_key: str, after_ms: int, timeout_s
             if not is_progress_only_report_text(text):
                 return text
             latest_progress = text
-        time.sleep(1.0)
+        time.sleep(5.0)
     return latest_progress
 
 
@@ -1462,7 +1462,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         "--expect-final",
         "--json",
         "--timeout",
-        str(900_000),
+        str(110_000),
         "--params",
         json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
     ]
@@ -1472,7 +1472,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
     env["NO_COLOR"] = "1"
     request_start_ms = int(time.time() * 1000) - 1000
     try:
-        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=920)
+        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=130)
         raw = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0:
             if "session not found" in raw.lower():
@@ -1484,15 +1484,15 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         payload = parse_json_suffix(raw)
         text = None
         if is_transport_status_payload(payload):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=900)
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
         if not text:
             text = extract_response_text(payload)
         if not text or text in {"{}", "[]"} or is_internal_status_text(text):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=120)
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
         if text:
             text = strip_internal_report_contract(text)
         if text and is_progress_only_report_text(text):
-            final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=900)
+            final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=30)
             if final_text:
                 text = strip_internal_report_contract(final_text)
         fallback_used = False
@@ -1917,7 +1917,17 @@ def gateway_process_health(pid: int) -> dict[str, Any]:
             text=True,
             timeout=1.0,
         )
-        calls = [line for line in proc.stdout.splitlines() if "openclaw gateway call" in line]
+        calls = []
+        for line in proc.stdout.splitlines():
+            normalized = " ".join(line.split())
+            if "openclaw gateway call" not in normalized:
+                continue
+            # Count only real OpenClaw CLI processes. Shell wrappers, grep, and
+            # this health-check command itself can contain the same text and
+            # were causing false gatewayCallProcesses warnings.
+            if not (normalized.startswith("/usr/bin/node ") or normalized.startswith("node ") or normalized.startswith(OPENCLAW_BIN)):
+                continue
+            calls.append(normalized)
         health["gatewayCallProcesses"] = len(calls)
     except Exception as exc:
         health["warnings"].append(f"gateway call process check delayed: {exc}")
