@@ -84,8 +84,11 @@ SILENCE_NUDGE_INTERVAL_SECONDS = 900
 # 관제 화면은 "현재 작업"만 보여야 하므로, 최근 갱신이 없는 running 세션은
 # 작업/지연으로 올리지 않고 고아 세션으로 제외한다.
 ACTIVE_SESSION_MAX_STALE_MS = 3 * 60 * 1000
-SUBAGENT_ACTIVE_MAX_STALE_MS = 3 * 60 * 1000
-ASSIGNED_MAX_AGE_MS = 30 * 60 * 1000
+SUBAGENT_ACTIVE_MAX_STALE_MS = 5 * 60 * 1000
+RESPONSE_DELAY_MS = 3 * 60 * 1000
+RESPONSE_EXPIRE_MS = 15 * 60 * 1000
+REPORT_DELAY_MS = 15 * 60 * 1000
+WORK_STALE_FAIL_MS = 2 * 60 * 60 * 1000
 DEFAULT_CONTEXT_MAX_TOKENS = 1_000_000
 # H144/H145처럼 완료보고를 먼저 보낸 뒤 상태 파일 completedAt이 몇 초 늦게
 # 갱신되는 정상 흐름이 있다. 작은 시계/기록 순서 차이는 critical로 보지 않는다.
@@ -95,9 +98,9 @@ ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
 HANDOFF_MAX_CHARS = 12000
-SILENCE_WARNING_MS = 2 * 60 * 1000
-SELF_WORK_WARNING_MS = 2 * 60 * 1000
-SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
+SILENCE_WARNING_MS = 15 * 60 * 1000
+SELF_WORK_WARNING_MS = 15 * 60 * 1000
+SELF_WORK_REPORT_INTERVAL_MS = 15 * 60 * 1000
 SILENCE_AUTO_NUDGE_ENABLED = False
 
 
@@ -2517,7 +2520,12 @@ def expire_stale_pending_assignments(now: int | None = None) -> int:
                 item["pending"] = False
                 item["hidden"] = True
                 changed += 1
-            elif item.get("status") == "pending" and ts and now - ts > ASSIGNED_MAX_AGE_MS:
+            elif ts and now - ts > RESPONSE_EXPIRE_MS:
+                item["status"] = "expired"
+                item["pending"] = False
+                item["hidden"] = True
+                changed += 1
+            elif item.get("status") == "pending" and ts and now - ts > RESPONSE_DELAY_MS:
                 item["status"] = "delayed-pending"
                 item["pending"] = True
                 item.pop("hidden", None)
@@ -2548,7 +2556,7 @@ def expire_stale_work_items(now: int | None = None) -> int:
                 item["reportedAt"] = terminal_ts
                 item.setdefault("reason", "terminal chat row observed")
                 changed += 1
-            elif updated and now - updated > ASSIGNED_MAX_AGE_MS:
+            elif updated and now - updated > WORK_STALE_FAIL_MS:
                 item["status"] = "failed"
                 item["updatedAt"] = now
                 item["reason"] = "stale work item expired without active session"
@@ -3437,11 +3445,12 @@ def summarize_agents() -> dict[str, Any]:
         detail = "현재 생성 중 아님 · 최근 실행 세션 없음"
         if state == "assigned":
             pending_age_s = max(0, (now - pending_assignment_ms) // 1000)
-            status_text = "응답 지연" if pending_age_s * 1000 > ASSIGNED_MAX_AGE_MS else "응답 대기"
+            status_text = "응답 지연" if pending_age_s * 1000 > RESPONSE_DELAY_MS else "응답 대기"
             detail = f"{status_text} · 아직 최종 답변 없음 · 요청 {pending_age_s:,}초 전"
         if state == "reporting":
             pending_age_s = max(0, (now - pending_assignment_ms) // 1000)
-            detail = f"보고 대기 · 시작/진행 보고 이후 최종 완료보고 없음 · 요청 {pending_age_s:,}초 전"
+            status_text = "보고 지연" if pending_age_s * 1000 > REPORT_DELAY_MS else "보고 대기"
+            detail = f"{status_text} · 시작/진행 보고 이후 최종 완료보고 없음 · 요청 {pending_age_s:,}초 전"
         if current and state not in {"assigned", "reporting"}:
             total_tokens = context_tokens
             model = current.get("model") or "unknown"
