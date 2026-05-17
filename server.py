@@ -2152,13 +2152,17 @@ def latest_visible_agent_report_ts(agent_id: str, sessions: list[dict[str, Any]]
 
 def terminal_reply_ts(entries: list[dict[str, Any]]) -> int:
     latest = 0
+    terminal_statuses = {"done", "error", "synced", "internal-status", "resolved-pending"}
     for item in entries:
-        if item.get("role") != "assistant":
+        role = item.get("role")
+        status = item.get("status")
+        if status not in terminal_statuses:
             continue
-        if item.get("status") not in {"done", "error", "synced"}:
-            continue
-        content = str(item.get("content") or "")
-        if is_internal_status_text(content):
+        # Assistant replies, bridge errors, hidden internal-status rows, and
+        # resolved pending rows all mean the previous user turn is no longer
+        # actively waiting. Previously hidden internal/status/system errors were
+        # ignored, so cards stayed stuck as assigned/reporting + 무음 forever.
+        if role not in {"assistant", "system"}:
             continue
         latest = max(latest, int(item.get("ts") or 0))
     return latest
@@ -2223,7 +2227,7 @@ def latest_report_pending_ms(agent_id: str) -> int:
 
 def expire_stale_pending_assignments(now: int | None = None) -> int:
     # Keep genuinely unresolved questions as pending/delayed, but clear pending
-    # rows once a later assistant done/error exists. Otherwise finished chats can
+    # rows once a later terminal row exists. Otherwise finished/failed chats can
     # stay stuck as "응답 지연" for hours.
     now = now or int(time.time() * 1000)
     history = load_history()
@@ -2246,6 +2250,38 @@ def expire_stale_pending_assignments(now: int | None = None) -> int:
                 changed += 1
     if changed:
         save_history(history)
+    return changed
+
+
+def expire_stale_work_items(now: int | None = None) -> int:
+    now = now or int(time.time() * 1000)
+    history = load_history()
+    data = load_work_state()
+    changed = 0
+    for agent_id, items in data.items():
+        if not isinstance(items, list):
+            continue
+        terminal_ts = terminal_reply_ts(history.get(agent_id, []))
+        for item in items:
+            if not isinstance(item, dict) or item.get("status") not in {"working", "reporting", "verifying"}:
+                continue
+            started = int(item.get("startedAt") or 0)
+            updated = int(item.get("updatedAt") or started or 0)
+            if terminal_ts and started and terminal_ts >= started:
+                item["status"] = "reported"
+                item["updatedAt"] = max(now, terminal_ts)
+                item["lastReportAt"] = terminal_ts
+                item["reportedAt"] = terminal_ts
+                item.setdefault("reason", "terminal chat row observed")
+                changed += 1
+            elif updated and now - updated > ASSIGNED_MAX_AGE_MS:
+                item["status"] = "failed"
+                item["updatedAt"] = now
+                item["reason"] = "stale work item expired without active session"
+                changed += 1
+    if changed:
+        save_work_state(data)
+        invalidate_agents_cache()
     return changed
 
 
@@ -3059,6 +3095,7 @@ def summarize_agents() -> dict[str, Any]:
     sanitize_internal_report_contract_messages()
     sanitize_internal_done_messages()
     expire_stale_pending_assignments(now)
+    expire_stale_work_items(now)
     sessions = get_sessions_cached(timeout=18)
 
     output = []
