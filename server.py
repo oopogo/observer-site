@@ -110,6 +110,7 @@ FAST_CHAT_MAX_TOKENS = 20_000
 FAST_CHAT_MAX_AGE_MS = 2 * 60 * 60 * 1000
 WORK_SESSION_HANDOFF_RATIO = 0.90
 COMPLETION_REPORT_RETRY_SECONDS = 900
+NONFINAL_RECONCILE_LOOKBACK_MS = 2 * 60 * 60 * 1000
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
 HANDOFF_MAX_CHARS = 12000
 SILENCE_WARNING_MS = 15 * 60 * 1000
@@ -756,6 +757,44 @@ def mark_completion_report_requested(agent_id: str, request_id: str) -> None:
     save_work_state(data)
 
 
+def close_completion_recovery_item(agent_id: str, recovery_request_id: str, text: str, session_key: str, ts: int | None = None) -> bool:
+    prefix = "completion-report-"
+    if not recovery_request_id.startswith(prefix):
+        return False
+    original_request_id = recovery_request_id[len(prefix):]
+    if not original_request_id:
+        return False
+    now = int(time.time() * 1000)
+    report_ts = ts or now
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return False
+    changed = False
+    for item in items:
+        if not isinstance(item, dict) or item.get("requestId") != original_request_id:
+            continue
+        if is_final_work_report_text(text):
+            item["status"] = "reported"
+        else:
+            # A recovery answer like "아직 완료 아닙니다" is valuable: it tells the
+            # operator the previous task was not actually finished. Close the
+            # false completion debt as blocked instead of leaving the card in an
+            # endless 회수 확인 loop.
+            item["status"] = "blocked"
+        item["updatedAt"] = now
+        item["lastReportAt"] = report_ts
+        item["reportedAt"] = report_ts
+        item["recoveryClosedAt"] = now
+        item["reason"] = text[:500]
+        emit_work_event(agent_id, "work.reported" if item["status"] == "reported" else "work.blocked", item["status"], session_key=session_key or str(item.get("sessionKey") or ""), request_id=original_request_id, work_id=str(item.get("workId") or original_request_id), summary=text, ts=report_ts)
+        changed = True
+        break
+    if changed:
+        save_work_state(data)
+    return changed
+
+
 def is_final_work_report_text(text: str) -> bool:
     value = str(text or "").strip()
     if not value or is_internal_status_text(value):
@@ -849,8 +888,12 @@ def reconcile_nonfinal_reported_work_items(agent_id: str) -> int:
     if not isinstance(items, list):
         return 0
     changed = 0
+    now = int(time.time() * 1000)
     for item in items:
         if not isinstance(item, dict) or item.get("status") != "reported":
+            continue
+        updated = int(item.get("updatedAt") or item.get("reportedAt") or item.get("startedAt") or 0)
+        if updated and now - updated > NONFINAL_RECONCILE_LOOKBACK_MS:
             continue
         request_id = str(item.get("requestId") or "")
         text = assistant_text_for_request(agent_id, request_id)
@@ -2079,6 +2122,8 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             {"status": "done", "done": True, "pending": False, "error": False, "sessionKey": session_key, "role": "assistant", "hidden": False},
         )
         emit_work_event(agent_id, "session.completed", "reported", session_key=session_key, request_id=request_id, summary=text)
+        if close_completion_recovery_item(agent_id, request_id, text, session_key):
+            return
         if is_progress_only_report_text(text) or not is_final_work_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
@@ -2932,18 +2977,30 @@ def expire_stale_work_items(now: int | None = None) -> int:
     for agent_id, items in data.items():
         if not isinstance(items, list):
             continue
-        terminal_ts = terminal_reply_ts(history.get(agent_id, []))
+        entries = history.get(agent_id, [])
         for item in items:
             if not isinstance(item, dict) or item.get("status") not in {"working", "reporting", "verifying"}:
                 continue
             started = int(item.get("startedAt") or 0)
             updated = int(item.get("updatedAt") or started or 0)
-            if terminal_ts and started and terminal_ts >= started:
-                item["status"] = "reported"
+            terminal_rows = [row for row in entries if isinstance(row, dict) and row.get("role") in {"assistant", "system"} and row.get("status") in {"done", "error", "synced", "resolved-pending"} and int(row.get("ts") or 0) >= started]
+            if terminal_rows and started:
+                row = max(terminal_rows, key=lambda value: int(value.get("ts") or 0))
+                terminal_ts = int(row.get("ts") or 0)
+                content = str(row.get("content") or "")
+                if row.get("status") == "error" or content.startswith("실패:"):
+                    item["status"] = "failed"
+                    item["reason"] = content[:500] or "terminal error row observed"
+                elif is_progress_only_report_text(content) or not is_final_work_report_text(content):
+                    item["status"] = "completed-unreported"
+                    item["completedAt"] = terminal_ts
+                    item["reason"] = "마지막 답변이 완료보고가 아니라 작업 착수/대기 답변입니다."
+                else:
+                    item["status"] = "reported"
+                    item.setdefault("reason", "terminal chat row observed")
                 item["updatedAt"] = max(now, terminal_ts)
                 item["lastReportAt"] = terminal_ts
                 item["reportedAt"] = terminal_ts
-                item.setdefault("reason", "terminal chat row observed")
                 changed += 1
             elif updated and now - updated > WORK_STALE_FAIL_MS:
                 item["status"] = "failed"
