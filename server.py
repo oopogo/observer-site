@@ -829,6 +829,16 @@ def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
     return total / ctx if ctx > 0 else 0.0
 
 
+def session_is_busy_for_chat(row: dict[str, Any] | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    status = str(row.get("status") or "").lower()
+    # Do not send a new operator chat turn into a session that is already
+    # running. That race is what produced repeated "final response empty"
+    # bridge fallbacks while the agent was still doing tool work.
+    return status in {"running", "queued", "pending"}
+
+
 def current_observer_chat_row_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
     rows = agent_session_key_rows(agent_id, sessions)
     key = observer_chat_session_key_from_rows(agent_id, rows)
@@ -921,10 +931,11 @@ def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> d
 
 def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, str | None]:
     key, row = current_observer_chat_row_from_sessions(agent_id, sessions)
-    if session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
+    if not session_is_busy_for_chat(row) and session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
         return key, None
     summary = compact_local_chat_summary(agent_id)
-    result = create_new_observer_chat_session(agent_id, "context-auto")
+    reason = "busy-auto" if session_is_busy_for_chat(row) else "context-auto"
+    result = create_new_observer_chat_session(agent_id, reason)
     handoff = build_observer_handoff_text(agent_id, summary)
     return result["sessionKey"], handoff
 
@@ -1067,6 +1078,8 @@ def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -
         if status == "pending":
             return False
         if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
+            return False
+        if content.startswith("실패: 에이전트 최종 응답이 비었습니다"):
             return False
         if content.startswith("백그라운드 실행을 시작"):
             return False
@@ -1233,6 +1246,7 @@ def is_internal_status_text(text: str) -> bool:
         "Agent failed before reply",
         "All models failed",
         "Logs: openclaw logs",
+        "실패: 에이전트 최종 응답이 비었습니다",
     )
     return stripped.startswith(bad_prefixes)
 
@@ -1516,11 +1530,13 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
                 text = strip_internal_report_contract(final_text)
         fallback_used = False
         if not text or is_internal_status_text(text):
-            reason = "internal-status" if text and is_internal_status_text(text) else "empty-response"
+            # Empty responses here are usually a bridge/collection race, not a
+            # useful agent-facing failure. Keep the operator UI out of the
+            # scary "final response is empty" loop and leave the request in a
+            # recoverable reporting state instead of stamping a hard failure.
             text = (
-                f"실패: 에이전트 최종 응답이 비었습니다. "
-                f"agent={agent_id} session={session_key} reason={reason}. "
-                f"모델/라우팅/게이트웨이 상태 확인이 필요합니다."
+                "응답 회수 중입니다. 에이전트 실행은 계속 확인하고 있으며, "
+                "완료보고가 도착하면 이 메시지를 실제 응답으로 교체합니다."
             )
             fallback_used = True
         replace_history_message(
@@ -1531,7 +1547,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             {"status": "error" if fallback_used else "done", "done": True, "pending": False, "error": fallback_used, "sessionKey": session_key, "role": "assistant", "harnessFallback": fallback_used},
         )
         if fallback_used:
-            update_work_item(agent_id, request_id, "failed", report=True, reason="empty/internal assistant response")
+            update_work_item(agent_id, request_id, "reporting", report=True)
         elif is_progress_only_report_text(text) or not is_final_work_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
@@ -1567,9 +1583,10 @@ def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
         return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
     key = desired_observer_chat_session_key(agent_id)
     row = local_session_store_row(agent_id, key)
-    if session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
+    if session_is_busy_for_chat(row) or session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
         summary = compact_local_chat_summary(agent_id)
-        result = create_new_observer_chat_session(agent_id, "context-auto-local")
+        reason = "busy-auto-local" if session_is_busy_for_chat(row) else "context-auto-local"
+        result = create_new_observer_chat_session(agent_id, reason)
         handoff = build_observer_handoff_text(agent_id, summary)
         return result["sessionKey"], handoff
     return key, None
