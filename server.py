@@ -106,6 +106,8 @@ CHAT_SOFT_MAX_TOKENS = 80_000
 CHAT_FORCE_MAX_TOKENS = 120_000
 CHAT_MAX_AGE_MS = 6 * 60 * 60 * 1000
 CHAT_STUCK_STALE_MS = 60 * 1000
+FAST_CHAT_MAX_TOKENS = 20_000
+FAST_CHAT_MAX_AGE_MS = 2 * 60 * 60 * 1000
 WORK_SESSION_HANDOFF_RATIO = 0.90
 COMPLETION_REPORT_RETRY_SECONDS = 900
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
@@ -762,8 +764,9 @@ def is_final_work_report_text(text: str) -> bool:
     nonfinal_markers = (
         "아직 완료라고 하면 안", "완료라고 하면 안", "완료는 아닙니다", "완료가 아닙니다",
         "남아 있", "남았습니다", "마무리하겠습니다", "진행하겠습니다", "진행합니다",
-        "작성하겠습니다", "만들겠습니다", "확인하겠습니다", "바로 마무리", "지금 바로",
-        "우선 실제", "실패 우회", "작업 중", "진행 중",
+        "작성하겠습니다", "만들겠습니다", "확인하겠습니다", "확인해보고", "확인해 보겠습니다",
+        "정리하겠습니다", "박아두겠습니다", "맞출게요", "처리하겠습니다", "수정하겠습니다",
+        "바로 마무리", "지금 바로", "우선 실제", "실패 우회", "작업 중", "진행 중",
     )
     if any(marker in value for marker in nonfinal_markers):
         return False
@@ -829,7 +832,42 @@ def latest_visible_report_after(agent_id: str, after_ms: int) -> int:
     return latest
 
 
+def assistant_text_for_request(agent_id: str, request_id: str) -> str:
+    if not request_id:
+        return ""
+    for item in reversed(load_history().get(agent_id, [])):
+        if not isinstance(item, dict) or item.get("requestId") != request_id:
+            continue
+        if item.get("role") in {"assistant", "system"} and str(item.get("status") or "") == "done":
+            return str(item.get("content") or "")
+    return ""
+
+
+def reconcile_nonfinal_reported_work_items(agent_id: str) -> int:
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return 0
+    changed = 0
+    for item in items:
+        if not isinstance(item, dict) or item.get("status") != "reported":
+            continue
+        request_id = str(item.get("requestId") or "")
+        text = assistant_text_for_request(agent_id, request_id)
+        if text and is_progress_only_report_text(text):
+            item["status"] = "completed-unreported"
+            item["completedAt"] = int(item.get("reportedAt") or item.get("updatedAt") or time.time() * 1000)
+            item["reason"] = "마지막 답변이 완료보고가 아니라 작업 착수/대기 답변입니다."
+            item["updatedAt"] = int(time.time() * 1000)
+            emit_work_event(agent_id, "session.completed", "completed-unreported", session_key=str(item.get("sessionKey") or ""), request_id=request_id, work_id=str(item.get("workId") or request_id), summary=str(item.get("reason") or ""), ts=int(item.get("completedAt") or 0))
+            changed += 1
+    if changed:
+        save_work_state(data)
+    return changed
+
+
 def completed_unreported_work_item(agent_id: str) -> dict[str, Any] | None:
+    reconcile_nonfinal_reported_work_items(agent_id)
     items = load_work_state().get(agent_id, [])
     if not isinstance(items, list):
         return None
@@ -1728,7 +1766,11 @@ def is_progress_only_report_text(text: str) -> bool:
     # Only block very explicit start-only reports. Do not treat ordinary answers
     # like "확인했습니다 ... 기준을 바꾸겠습니다" as incomplete.
     future_report_markers = ("완료되면", "완료 전까지", "끝나면", "보고하겠습니다", "보고드리겠습니다", "완료 후", "끝나는 대로")
-    start_markers = ("시작합니다", "시작했습니다", "진행하겠습니다", "진행합니다", "착수합니다", "바로 넣겠습니다", "바로 수정", "확인하겠습니다", "보겠습니다")
+    start_markers = (
+        "시작합니다", "시작했습니다", "진행하겠습니다", "진행합니다", "착수합니다",
+        "바로 넣겠습니다", "바로 수정", "확인하겠습니다", "보겠습니다", "확인해보고",
+        "정리하겠습니다", "박아두겠습니다", "맞출게요", "처리하겠습니다", "수정하겠습니다",
+    )
     if any(marker in value for marker in future_report_markers):
         return True
     return any(marker in value for marker in start_markers) and len(value) < 500
@@ -1934,6 +1976,43 @@ def is_work_request_message(message: str, attachments: list[dict[str, Any]] | No
     return False
 
 
+def is_fast_question_message(message: str, attachments: list[dict[str, Any]] | None = None) -> bool:
+    if attachments:
+        return False
+    text = str(message or "").strip()
+    if not text or len(text) > 220:
+        return False
+    if is_work_request_message(text, attachments):
+        return False
+    question_markers = ("?", "뭐", "왜", "어디", "있어", "맞아", "아니야", "언제", "얼마", "상태")
+    return text.endswith("?") or any(marker in text for marker in question_markers)
+
+
+def fast_chat_session_key(agent_id: str) -> str:
+    base = f"agent:{agent_id}:observer-site-fast-chat"
+    row = local_session_store_row(agent_id, base)
+    now_ms = int(time.time() * 1000)
+    if isinstance(row, dict):
+        tokens = int(row.get("totalTokens") or 0)
+        started = to_epoch_ms(row.get("startedAt"))
+        if tokens < FAST_CHAT_MAX_TOKENS and (not started or now_ms - started < FAST_CHAT_MAX_AGE_MS):
+            return base
+    return f"{base}:{time.strftime('%Y%m%d%H%M%S', time.localtime())}"
+
+
+def compact_fast_chat_context(agent_id: str, limit: int = 6) -> str:
+    rows = public_chat_messages(agent_id, limit=limit)
+    lines = []
+    for item in rows[-limit:]:
+        role = str(item.get("role") or "message")
+        content = compact_report_line(str(item.get("content") or "").replace("\n", " "), 220)
+        if content:
+            lines.append(f"- {role}: {content}")
+    if not lines:
+        return ""
+    return "[빠른 질문용 최근 맥락]\n" + "\n".join(lines) + "\n\n[응답 원칙]\n매크로/상태문으로 답하지 말고, 실제로 아는 내용만 짧게 답하세요. 확인이 필요하면 무엇을 확인해야 하는지 구체적으로 말하세요."
+
+
 def complete_chat_async(agent_id: str, agent_name: str, session_key: str, message: str, request_id: str) -> None:
     """Send a chat turn to the selected OpenClaw agent and write the real final reply.
 
@@ -2078,17 +2157,23 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     cleaned_message = strip_internal_report_contract(message)
     validate_chat_message(agent_id, cleaned_message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
-    session_key, handoff_summary = fast_chat_session_for_send(agent_id)
+    fast_question = is_fast_question_message(cleaned_message, attachments)
+    if fast_question:
+        session_key, handoff_summary = fast_chat_session_key(agent_id), compact_fast_chat_context(agent_id)
+    else:
+        session_key, handoff_summary = fast_chat_session_for_send(agent_id)
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
     display_message = cleaned_message.strip() or "이미지 첨부"
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
     outbound_message = build_message_with_attachments(cleaned_message, saved_attachments)
+    if fast_question:
+        outbound_message = "[빠른 관제 질문]\n" + outbound_message
     if handoff_summary:
         outbound_message = f"{handoff_summary}\n\n[새 요청]\n{outbound_message}"
-    append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
-    append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
+    append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments, "fastQuestion": fast_question})
+    append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True, "fastQuestion": fast_question})
     if is_work_request_message(cleaned_message, saved_attachments):
         register_work_item(agent_id, request_id, outbound_message, session_key)
     outbound_for_worker = outbound_message
