@@ -2171,7 +2171,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1818';
+      const BUILD_ID = '2026-05-17-1828';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2419,9 +2419,11 @@
       }
 
       function contextSourceLabel(source) {
+        if (source && source.startsWith('model.auto.')) return '모델자동';
         if (source === 'session.contextTokens') return '세션값';
         if (source === 'observer.policy.openai-codex') return '관제보정';
         if (source === 'observer.default') return '관제기본';
+        if (source && source.startsWith('config.')) return '설정기본';
         return source || '출처미상';
       }
 
@@ -2437,7 +2439,8 @@
         const model = agent.contextModel || agent.contextProvider || '';
         const handoff = agent.contextHandoff;
         const handoffText = handoff ? ` · 인계 ${formatTokenCount(handoff.handoffChars || 0)} chars 포함` : '';
-        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · ${session}${handoffText}${model ? ` · ${model}` : ''}${advice}`;
+        const sessionCtx = agent.contextSessionTokens ? ` · 세션저장 ${formatTokenCount(agent.contextSessionTokens)}` : '';
+        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source}${sessionCtx} · ${session}${handoffText}${model ? ` · ${model}` : ''}${advice}`;
         return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>남은 CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)} · ${escapeHtml(session)}${handoff ? ' · 인계포함' : ''}${advice}</span></div>`;
       }
 

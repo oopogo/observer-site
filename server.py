@@ -54,6 +54,7 @@ ACP_SESSION_DIRS = [
 ]
 ROGUELIKE_ROOT = Path("/mnt/c/MegaGrit/RogueLike_001")
 OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/home/oopogo/.npm-global/bin/openclaw")
+OPENCLAW_CONFIG_PATH = Path("/home/oopogo/.openclaw/openclaw.json")
 AGENTS = [
     {"id": "main", "name": "밀레느", "orb": "밀", "role": "메인 작업 에이전트", "tags": ["MAIN", "ORCHESTRATOR", "게임"]},
     {"id": "observer", "name": "observer", "orb": "옵", "role": "운영 감시자", "tags": ["OPS", "GATEWAY", "감시"]},
@@ -814,36 +815,102 @@ def safe_positive_int(value: Any) -> int:
     return num if num > 0 else 0
 
 
-def context_window_info(row: dict[str, Any] | None) -> dict[str, Any]:
+
+
+def load_openclaw_config() -> dict[str, Any]:
+    try:
+        data = json.loads(OPENCLAW_CONFIG_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def primary_model_id(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        primary = value.get("primary") or value.get("model") or value.get("id")
+        return str(primary or "").strip()
+    return ""
+
+
+def configured_agent_model(agent_id: str | None) -> tuple[str, str]:
+    cfg = load_openclaw_config()
+    agents = cfg.get("agents") if isinstance(cfg.get("agents"), dict) else {}
+    if agent_id:
+        for item in agents.get("list", []) if isinstance(agents.get("list"), list) else []:
+            if isinstance(item, dict) and str(item.get("id") or "") == str(agent_id):
+                model = primary_model_id(item.get("model"))
+                if model:
+                    return model, "config.agent.model"
+    defaults = agents.get("defaults") if isinstance(agents.get("defaults"), dict) else {}
+    model = primary_model_id(defaults.get("model"))
+    return (model, "config.agents.defaults.model") if model else ("", "")
+
+
+def infer_provider_from_model(model: str, provider: str = "") -> str:
+    if provider:
+        return provider
+    text = model.lower()
+    if text.startswith("openai-codex/") or text.startswith("gpt-"):
+        return "openai-codex"
+    if text.startswith("openrouter/"):
+        return "openrouter"
+    if text.startswith("anthropic/") or "claude" in text:
+        return "anthropic"
+    if text.startswith("moonshot/") or "kimi" in text:
+        return "moonshot"
+    return ""
+
+
+def model_context_window_tokens(model: str, provider: str = "") -> tuple[int, str]:
+    text = str(model or "").strip().lower()
+    compact = text.split("/", 1)[1] if "/" in text and text.startswith(("openai-codex/", "openrouter/", "anthropic/", "moonshot/")) else text
+    prov = infer_provider_from_model(text, provider).lower()
+    # Known OpenClaw/catalog windows for models used in this installation.
+    if prov == "openai-codex" or compact.startswith("gpt-5") or "gpt-5" in compact:
+        return 1_000_000, "model.auto.openai-codex"
+    if "kimi-k2.6" in compact or "kimi-k2-6" in compact or "kimi-k2p6" in compact:
+        return 262_144, "model.auto.kimi-k2.6"
+    if "kimi" in compact:
+        return 262_144, "model.auto.kimi"
+    if "claude-opus-4-6" in compact or "claude-opus-4.6" in compact:
+        return 200_000, "model.auto.claude-opus"
+    if "claude" in compact:
+        return 200_000, "model.auto.claude"
+    return 0, ""
+
+def context_window_info(row: dict[str, Any] | None, agent_id: str | None = None) -> dict[str, Any]:
     """Return one normalized context view for observer cards.
 
     Source priority:
-    1. persisted session.contextTokens from OpenClaw session store
-    2. observer-site policy floor for openai-codex/gpt-5 sessions
+    1. model/provider auto context window
+    2. persisted session.contextTokens
     3. observer-site default floor
 
-    This function is intentionally the only place where the dashboard decides
-    what to show as the card context window. OpenClaw runtime/model catalogs may
-    have their own values, but the card should expose the chosen source.
+    Session-stored contextTokens can be stale after model changes, so the model
+    window wins when the current/configured model is known.
     """
     row = row if isinstance(row, dict) else {}
     used = safe_positive_int(row.get("totalTokens"))
-    explicit = safe_positive_int(row.get("contextTokens"))
-    model = str(row.get("model") or "")
-    provider = str(row.get("modelProvider") or "")
+    configured_model, configured_source = configured_agent_model(agent_id)
+    model = str(row.get("model") or configured_model or "")
+    provider = infer_provider_from_model(model, str(row.get("modelProvider") or ""))
     session_key = str(row.get("key") or "")
+    explicit = safe_positive_int(row.get("contextTokens"))
 
-    if explicit:
+    auto_tokens, auto_source = model_context_window_tokens(model, provider)
+    if auto_tokens:
+        max_tokens = auto_tokens
+        source = auto_source
+        policy = "모델 자동값"
+    elif explicit:
         max_tokens = explicit
         source = "session.contextTokens"
         policy = "세션 저장값"
-    elif model.startswith("gpt-5") or provider == "openai-codex":
-        max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
-        source = "observer.policy.openai-codex"
-        policy = "관제 보정값"
     else:
         max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
-        source = "observer.default"
+        source = configured_source or "observer.default"
         policy = "관제 기본값"
 
     remaining = max(0, min(100, round((1 - (used / max_tokens)) * 100))) if max_tokens else 0
@@ -855,16 +922,18 @@ def context_window_info(row: dict[str, Any] | None) -> dict[str, Any]:
         "policy": policy,
         "model": model,
         "provider": provider,
+        "configuredModelSource": configured_source or None,
+        "sessionContextTokens": explicit or None,
         "sessionKey": session_key or None,
     }
 
 
-def effective_context_max_tokens(row: dict[str, Any] | None) -> int:
-    return int(context_window_info(row).get("max") or DEFAULT_CONTEXT_MAX_TOKENS)
+def effective_context_max_tokens(row: dict[str, Any] | None, agent_id: str | None = None) -> int:
+    return int(context_window_info(row, agent_id).get("max") or DEFAULT_CONTEXT_MAX_TOKENS)
 
 
-def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
-    info = context_window_info(row)
+def session_context_usage_ratio(row: dict[str, Any] | None, agent_id: str | None = None) -> float:
+    info = context_window_info(row, agent_id)
     total = float(info.get("used") or 0)
     ctx = float(info.get("max") or 0)
     return total / ctx if ctx > 0 else 0.0
@@ -1046,7 +1115,7 @@ def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict
     # observer-site-chat:YYYYMMDDHHMMSS churn. Only context pressure may trigger
     # an automatic rollover; busy/stuck recovery should be manual or handled by
     # the gateway queue.
-    if session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
+    if session_context_usage_ratio(row, agent_id) < CONTEXT_ROLLOVER_RATIO:
         return key, None
     summary = compact_local_chat_summary(agent_id)
     result = create_new_observer_chat_session(agent_id, "context-auto")
@@ -1698,7 +1767,7 @@ def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
         return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
     key = desired_observer_chat_session_key(agent_id)
     row = local_session_store_row(agent_id, key)
-    if session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
+    if session_context_usage_ratio(row, agent_id) >= CONTEXT_ROLLOVER_RATIO:
         summary = compact_local_chat_summary(agent_id)
         result = create_new_observer_chat_session(agent_id, "context-auto-local")
         handoff = build_observer_handoff_text(agent_id, summary, reason=result.get("reason") or "context-auto-local", old_key=result.get("oldSessionKey") or "", new_key=result.get("sessionKey") or "")
@@ -3320,7 +3389,7 @@ def summarize_agents() -> dict[str, Any]:
             state = "warning"
 
         latest_updated = current_updated
-        context_info = context_window_info(context_source)
+        context_info = context_window_info(context_source, base["id"])
         context_tokens = int(context_info["used"])
         context_max_tokens = int(context_info["max"])
         context_remaining_percent = int(context_info["remainingPercent"])
@@ -3426,6 +3495,8 @@ def summarize_agents() -> dict[str, Any]:
             "contextPolicy": context_info.get("policy"),
             "contextModel": current_model,
             "contextProvider": current_provider,
+            "contextConfiguredModelSource": context_info.get("configuredModelSource"),
+            "contextSessionTokens": context_info.get("sessionContextTokens"),
             "contextHandoff": latest_handoff_meta(base["id"], context_info.get("sessionKey")),
             "subagents": subagent_summary,
             "unreadCount": unread_count(base["id"]),

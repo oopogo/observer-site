@@ -19,12 +19,16 @@
 
 ## 출처 우선순위
 
-1. `session.contextTokens`
-   - OpenClaw 세션 저장소에 이미 기록된 값.
-   - 관제 표시는 이 값을 가장 우선한다.
-2. `observer.policy.openai-codex`
-   - 세션 저장값이 없고 모델/프로바이더가 `gpt-5*` 또는 `openai-codex`인 경우 관제 정책상 `1,000,000`으로 표시한다.
-3. `observer.default`
+1. `model.auto.*`
+   - 현재 세션 모델 또는 agent config의 primary model을 기준으로 자동 추정한 context window.
+   - 세션 저장소의 `contextTokens`가 오래된 값일 수 있으므로 모델 자동값을 가장 우선한다.
+   - 현재 관제 매핑:
+     - `openai-codex/gpt-5*`, `gpt-5*` → `1,000,000`
+     - `kimi-k2.6`, `kimi*` → `262,144`
+     - `claude*` → `200,000`
+2. `session.contextTokens`
+   - 모델을 알 수 없을 때 OpenClaw 세션 저장소에 이미 기록된 값을 사용한다.
+3. `observer.default` 또는 config 기본값
    - 위 둘 다 없으면 관제 기본값 `1,000,000`으로 표시한다.
 
 ## 실제 OpenClaw 쪽 관련 위치
@@ -45,6 +49,7 @@
 ## 운영 원칙
 
 - 관제 카드의 context 표시는 **보정/표시 정책**이지 gateway config 변경이 아니다.
+- 모델 자동값은 `context_window_info()`에서만 결정한다.
 - 자동 새 세션 전환은 `session_context_usage_ratio()`만 사용한다.
 - `running/queued/pending` 상태만으로 새 세션 전환하지 않는다.
 - 표시 기준을 바꾸려면 `context_window_info()`만 수정한다.
