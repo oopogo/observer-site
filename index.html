@@ -2261,10 +2261,11 @@
       }
 
       function stateLabel(state, agent = null) {
-        if (state === 'working') return '작업중';
+        if (agent && agent.recoveryCheckNeeded) return '회수 확인';
+        if (state === 'working') return agent && agent.statusText ? agent.statusText : '작업중';
         if (agent && agent.needsSilenceReport) return '무응답 경고';
         if (state === 'assigned' || state === 'reporting') return agent && agent.statusText ? String(agent.statusText).replace('보고 누락', '보고 미수신').replace('보고 대기', '보고 미수신').replace('응답 대기', '응답 미수신') : (state === 'reporting' ? '보고 미수신' : '응답 미수신');
-        if (state === 'warning' || state === 'stale') return '관제 점검';
+        if (state === 'warning' || state === 'stale') return agent && agent.statusText ? agent.statusText : '관제 점검';
         if (state === 'failed') return '실패';
         return '응답 가능';
       }
@@ -2402,7 +2403,7 @@
       }
 
       function stateBadgeClass(state, agent = null) {
-        if (agent && agent.needsSilenceReport) return 'warn';
+        if (agent && (agent.needsSilenceReport || agent.recoveryCheckNeeded)) return 'warn';
         if (state === 'working') return 'work';
         if (state === 'assigned' || state === 'reporting') return 'assigned';
         if (state === 'warning') return 'warn';
@@ -2513,7 +2514,7 @@
       }
 
       function renderTags(agent) {
-        const workingTag = agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 미수신' : (agent.isReportPending ? '보고 미수신' : (agent.isAssigned ? ((agent.statusText || '응답 미수신').replace('응답 대기', '응답 미수신')) : '대기')));
+        const workingTag = agent.recoveryCheckNeeded ? '회수 확인 필요' : (agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 미수신' : (agent.isReportPending ? '보고 미수신' : (agent.isAssigned ? ((agent.statusText || '응답 미수신').replace('응답 대기', '응답 미수신')) : '대기'))));
         const silenceTag = agent.needsSilenceReport ? `무응답 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
         const workTag = agent.activeWork ? '작업 등록됨' : '';
         const routeTag = agent.controlRoute === 'observer-web' ? 'WEB 제어' : '';
@@ -2539,7 +2540,7 @@
           <div class="orb-stack"><div class="orb">${orbContent}</div>${renderModelChip(agent)}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)}</div>
-            <div class="status">${escapeHtml(agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중')))}</div>
+            <div class="status">${escapeHtml(agent.recoveryCheckNeeded ? (agent.detail || '응답 회수 확인이 필요합니다.') : (agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중'))))}</div>
             ${renderContextBattery(agent)}
             ${renderTags(agent)}
             ${renderSubagents(agent)}

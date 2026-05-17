@@ -3529,12 +3529,23 @@ def summarize_agents() -> dict[str, Any]:
             started = int(active_work.get("startedAt") or now)
             detail = f"보고 대기 · 등록 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
         call_only_waiting = is_call_only_agent(base) and state in {"assigned", "reporting"}
+        recovery_check_needed = False
         if call_only_waiting:
-            wait_started = pending_assignment_ms or int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else pending_assignment_ms
-            wait_age_s = max(0, (now - int(wait_started or now)) // 1000)
-            state = "working"
-            status_text = "작업 중"
-            detail = f"작업 중 · 응답 생성/회수 대기 · 요청 {wait_age_s:,}초 전"
+            active_started = int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else 0
+            wait_started = pending_assignment_ms or active_started or now
+            wait_age_ms = max(0, now - int(wait_started or now))
+            local_status = str((local_chat_session or {}).get("status") or "")
+            local_done = normalize_status(local_status) == "idle" and local_status.lower() in {"done", "failed", "error", "timeout", "timed_out"}
+            if (not recent_active) and (local_done or wait_age_ms >= RESPONSE_DELAY_MS):
+                state = "warning"
+                status_text = "응답 회수 확인 필요"
+                recovery_check_needed = True
+                ended_note = f"세션 {local_status}" if local_status else "실행 세션 없음"
+                detail = f"응답 회수 확인 필요 · {ended_note} · 채팅 답변 미반영 · 요청 {wait_age_ms // 1000:,}초 전"
+            else:
+                state = "working"
+                status_text = "응답 처리 중"
+                detail = f"응답 처리 중 · 세션 실행/답변 회수 확인 중 · 요청 {wait_age_ms // 1000:,}초 전"
         last_visible_report_ts = latest_visible_agent_report_ts(base["id"], agent_sessions, chat_key)
         work_started_ts = int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else 0
         live_activity_ts = current_updated if recent_active else 0
@@ -3563,6 +3574,7 @@ def summarize_agents() -> dict[str, Any]:
             "lastVisibleReportTs": last_visible_report_ts,
             "silenceAgeMs": silence_age_ms,
             "needsSilenceReport": needs_silence_report,
+            "recoveryCheckNeeded": recovery_check_needed,
             "activeWork": active_work,
             "selfWork": self_work if base["id"] == "observer" else None,
             "selfWorkAgeMs": self_work_age_ms if base["id"] == "observer" else 0,
