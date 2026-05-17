@@ -128,12 +128,41 @@ def invalidate_agents_cache() -> None:
         AGENTS_CACHE = None
 
 
+def load_local_sessions_snapshot() -> list[dict[str, Any]]:
+    sessions: list[dict[str, Any]] = []
+    agents_root = Path("/home/oopogo/.openclaw/agents")
+    for path in sorted(agents_root.glob("*/sessions/sessions.json")):
+        agent_id = path.parts[-3]
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key, row in data.items():
+            if not isinstance(row, dict):
+                continue
+            if ":subagent:" in str(key) or row.get("spawnedBy"):
+                continue
+            item = {**row}
+            item.setdefault("key", str(key))
+            item.setdefault("agentId", agent_id)
+            item["source"] = "local-session-store"
+            sessions.append(item)
+    sessions.sort(key=lambda item: to_epoch_ms(item.get("updatedAt") or item.get("startedAt")), reverse=True)
+    return sessions
+
+
 def get_sessions_cached(timeout: int = 12) -> list[dict[str, Any]]:
     cached = cache_get("sessions")
     sessions = cached.get("sessions") if isinstance(cached, dict) else []
     if not isinstance(sessions, list):
         sessions = []
     if not GATEWAY_SESSION_SUMMARY_ENABLED:
+        if cache_is_fresh(cached):
+            return sessions
+        sessions = load_local_sessions_snapshot()
+        cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions, "source": "local-session-store"})
         return sessions
     if cache_is_fresh(cached):
         return sessions
@@ -148,7 +177,7 @@ def get_sessions_cached(timeout: int = 12) -> list[dict[str, Any]]:
         sessions = payload.get("sessions") if isinstance(payload, dict) else []
         if not isinstance(sessions, list):
             sessions = []
-        cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions})
+        cache_set("sessions", {"generatedAt": int(time.time() * 1000), "sessions": sessions, "source": "gateway"})
         return sessions
     finally:
         SESSIONS_REFRESH_LOCK.release()
@@ -2109,7 +2138,7 @@ def normalize_status(raw: str | None) -> str:
     text = (raw or "").lower()
     if text in {"running", "processing", "queued"}:
         return "working"
-    if text in {"failed", "error", "timed_out", "stuck"}:
+    if text in {"failed", "error", "timed_out", "timeout", "stuck"}:
         return "warning"
     return "idle"
 
@@ -3453,7 +3482,10 @@ def summarize_agents() -> dict[str, Any]:
             detail = f"보고 대기 · 등록 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
         last_visible_report_ts = latest_visible_agent_report_ts(base["id"], agent_sessions, chat_key)
         work_started_ts = int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else 0
-        silence_base_ts = max(last_visible_report_ts, work_started_ts)
+        live_activity_ts = current_updated if recent_active else 0
+        # If a live session is actively updating, do not mark it as silent just
+        # because the observer-site chat history has no visible report yet.
+        silence_base_ts = max(last_visible_report_ts, work_started_ts, live_activity_ts)
         silence_age_ms = max(0, now - silence_base_ts) if silence_base_ts else 0
         needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= SILENCE_WARNING_MS
         if needs_silence_report:
