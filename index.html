@@ -2171,7 +2171,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1756';
+      const BUILD_ID = '2026-05-17-1800';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2400,10 +2400,20 @@
         return String(num);
       }
 
-      function shortSessionKey(value) {
+      function formatObserverSessionLabel(value) {
         const text = String(value || '');
         if (!text) return '-';
         const parts = text.split(':');
+        const agent = parts[1] || '';
+        const marker = 'observer-site-chat';
+        const markerIndex = parts.indexOf(marker);
+        if (markerIndex >= 0) {
+          const suffix = parts[markerIndex + 1] || '';
+          if (!suffix) return `${agent ? `${agent} · ` : ''}기본 세션`;
+          const stamp = suffix.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+          if (stamp) return `${agent ? `${agent} · ` : ''}전환 세션 ${stamp[1]}-${stamp[2]}-${stamp[3]} ${stamp[4]}:${stamp[5]}`;
+          return `${agent ? `${agent} · ` : ''}전환 세션 ${suffix.length > 18 ? `${suffix.slice(0, 18)}…` : suffix}`;
+        }
         const tail = parts[parts.length - 1] || text;
         return tail.length > 18 ? `${tail.slice(0, 18)}…` : tail;
       }
@@ -2423,10 +2433,10 @@
         const usedPct = 100 - left;
         const advice = usedPct >= 95 ? ' · 자동 전환 예정' : (usedPct >= 90 ? ' · 새 세션 권장' : (usedPct >= 80 ? ' · 주의' : ''));
         const source = contextSourceLabel(agent.contextSource);
-        const session = shortSessionKey(agent.contextSessionKey);
+        const session = formatObserverSessionLabel(agent.contextSessionKey);
         const model = agent.contextModel || agent.contextProvider || '';
-        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · 세션 ${session}${model ? ` · ${model}` : ''}${advice}`;
-        return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)}${advice}</span></div>`;
+        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · ${session}${model ? ` · ${model}` : ''}${advice}`;
+        return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)} · ${escapeHtml(session)}${advice}</span></div>`;
       }
 
       function renderTags(agent) {
