@@ -2171,7 +2171,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1739';
+      const BUILD_ID = '2026-05-17-1756';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2400,6 +2400,21 @@
         return String(num);
       }
 
+      function shortSessionKey(value) {
+        const text = String(value || '');
+        if (!text) return '-';
+        const parts = text.split(':');
+        const tail = parts[parts.length - 1] || text;
+        return tail.length > 18 ? `${tail.slice(0, 18)}…` : tail;
+      }
+
+      function contextSourceLabel(source) {
+        if (source === 'session.contextTokens') return '세션값';
+        if (source === 'observer.policy.openai-codex') return '관제보정';
+        if (source === 'observer.default') return '관제기본';
+        return source || '출처미상';
+      }
+
       function renderContextBattery(agent) {
         const left = Math.max(0, Math.min(100, Number(agent.contextRemainingPercent ?? 100)));
         const used = Number(agent.contextTokens || 0);
@@ -2407,7 +2422,11 @@
         const cls = left <= 10 ? 'low' : (left <= 25 ? 'warn' : '');
         const usedPct = 100 - left;
         const advice = usedPct >= 95 ? ' · 자동 전환 예정' : (usedPct >= 90 ? ' · 새 세션 권장' : (usedPct >= 80 ? ' · 주의' : ''));
-        return `<div class="context-battery ${cls}" title="관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}%${advice}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)}${advice}</span></div>`;
+        const source = contextSourceLabel(agent.contextSource);
+        const session = shortSessionKey(agent.contextSessionKey);
+        const model = agent.contextModel || agent.contextProvider || '';
+        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · 세션 ${session}${model ? ` · ${model}` : ''}${advice}`;
+        return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)}${advice}</span></div>`;
       }
 
       function renderTags(agent) {

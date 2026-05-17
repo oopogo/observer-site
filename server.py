@@ -804,28 +804,67 @@ def observer_chat_session_key(agent_id: str) -> str:
     return observer_chat_session_key_from_rows(agent_id, existing_agent_session_keys(agent_id))
 
 
-def effective_context_max_tokens(row: dict[str, Any] | None) -> int:
-    if not isinstance(row, dict):
-        return DEFAULT_CONTEXT_MAX_TOKENS
-    explicit = int(float(row.get("contextTokens") or 0) or 0)
-    channel = str(row.get("channel") or "")
-    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
-    if explicit > 0 and (channel == "webchat" or origin.get("provider") == "webchat"):
-        return explicit
-    if explicit > 0:
-        return max(explicit, DEFAULT_CONTEXT_MAX_TOKENS)
+def safe_positive_int(value: Any) -> int:
+    try:
+        num = int(float(value or 0))
+    except Exception:
+        return 0
+    return num if num > 0 else 0
+
+
+def context_window_info(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Return one normalized context view for observer cards.
+
+    Source priority:
+    1. persisted session.contextTokens from OpenClaw session store
+    2. observer-site policy floor for openai-codex/gpt-5 sessions
+    3. observer-site default floor
+
+    This function is intentionally the only place where the dashboard decides
+    what to show as the card context window. OpenClaw runtime/model catalogs may
+    have their own values, but the card should expose the chosen source.
+    """
+    row = row if isinstance(row, dict) else {}
+    used = safe_positive_int(row.get("totalTokens"))
+    explicit = safe_positive_int(row.get("contextTokens"))
     model = str(row.get("model") or "")
     provider = str(row.get("modelProvider") or "")
-    if model.startswith("gpt-5") or provider == "openai-codex":
-        return DEFAULT_CONTEXT_MAX_TOKENS
-    return DEFAULT_CONTEXT_MAX_TOKENS
+    session_key = str(row.get("key") or "")
+
+    if explicit:
+        max_tokens = explicit
+        source = "session.contextTokens"
+        policy = "세션 저장값"
+    elif model.startswith("gpt-5") or provider == "openai-codex":
+        max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
+        source = "observer.policy.openai-codex"
+        policy = "관제 보정값"
+    else:
+        max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
+        source = "observer.default"
+        policy = "관제 기본값"
+
+    remaining = max(0, min(100, round((1 - (used / max_tokens)) * 100))) if max_tokens else 0
+    return {
+        "used": used,
+        "max": max_tokens,
+        "remainingPercent": remaining,
+        "source": source,
+        "policy": policy,
+        "model": model,
+        "provider": provider,
+        "sessionKey": session_key or None,
+    }
+
+
+def effective_context_max_tokens(row: dict[str, Any] | None) -> int:
+    return int(context_window_info(row).get("max") or DEFAULT_CONTEXT_MAX_TOKENS)
 
 
 def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
-    if not isinstance(row, dict):
-        return 0.0
-    total = float(row.get("totalTokens") or 0)
-    ctx = float(effective_context_max_tokens(row) or 0)
+    info = context_window_info(row)
+    total = float(info.get("used") or 0)
+    ctx = float(info.get("max") or 0)
     return total / ctx if ctx > 0 else 0.0
 
 
@@ -854,7 +893,9 @@ def local_session_store_row(agent_id: str, key: str) -> dict[str, Any] | None:
     except Exception:
         return None
     row = data.get(key) if isinstance(data, dict) else None
-    return row if isinstance(row, dict) else None
+    if not isinstance(row, dict):
+        return None
+    return {**row, "key": key}
 
 
 
@@ -3183,7 +3224,11 @@ def summarize_agents() -> dict[str, Any]:
         chat_rows = agent_session_key_rows(base["id"], agent_sessions)
         chat_key = observer_chat_session_key_from_rows(base["id"], chat_rows)
         chat_session = next((s for s in agent_sessions if str(s.get("key") or "") == chat_key), None)
-        context_source = chat_session or current
+        # /api/agents intentionally avoids live sessions.list under load. Keep
+        # the card context useful by falling back to the local session store for
+        # the pinned observer-site chat session.
+        local_chat_session = local_session_store_row(base["id"], chat_key)
+        context_source = chat_session or local_chat_session or current
 
         report_pending_ms = latest_report_pending_ms(base["id"])
         pending_assignment_ms = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
@@ -3204,11 +3249,12 @@ def summarize_agents() -> dict[str, Any]:
             state = "warning"
 
         latest_updated = current_updated
-        context_tokens = int(float(context_source.get("totalTokens") or 0) or 0) if context_source else 0
-        context_max_tokens = effective_context_max_tokens(context_source)
-        current_model = str(context_source.get("model") or "") if context_source else ""
-        current_provider = str(context_source.get("modelProvider") or "") if context_source else ""
-        context_remaining_percent = max(0, min(100, round((1 - (context_tokens / context_max_tokens)) * 100))) if context_max_tokens else 0
+        context_info = context_window_info(context_source)
+        context_tokens = int(context_info["used"])
+        context_max_tokens = int(context_info["max"])
+        context_remaining_percent = int(context_info["remainingPercent"])
+        current_model = str(context_info.get("model") or "")
+        current_provider = str(context_info.get("provider") or "")
         status_text = "응답 가능"
         if state == "working":
             status_text = "작업 중"
@@ -3303,8 +3349,12 @@ def summarize_agents() -> dict[str, Any]:
             "latestPreview": current.get("lastMessagePreview") if current else None,
             "contextTokens": context_tokens,
             "contextMaxTokens": context_max_tokens,
-            "contextSessionKey": context_source.get("key") if context_source else None,
+            "contextSessionKey": context_info.get("sessionKey"),
             "contextRemainingPercent": context_remaining_percent,
+            "contextSource": context_info.get("source"),
+            "contextPolicy": context_info.get("policy"),
+            "contextModel": current_model,
+            "contextProvider": current_provider,
             "subagents": subagent_summary,
             "unreadCount": unread_count(base["id"]),
         }
