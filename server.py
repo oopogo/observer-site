@@ -774,7 +774,7 @@ def close_completion_recovery_item(agent_id: str, recovery_request_id: str, text
     for item in items:
         if not isinstance(item, dict) or item.get("requestId") != original_request_id:
             continue
-        if is_final_work_report_text(text):
+        if is_completion_report_text(text):
             item["status"] = "reported"
         else:
             # A recovery answer like "아직 완료 아닙니다" is valuable: it tells the
@@ -799,26 +799,45 @@ def is_final_work_report_text(text: str) -> bool:
     value = str(text or "").strip()
     if not value or is_internal_status_text(value):
         return False
-    lowered = value.lower()
     nonfinal_markers = (
         "아직 완료라고 하면 안", "완료라고 하면 안", "완료는 아닙니다", "완료가 아닙니다",
         "남아 있", "남았습니다", "마무리하겠습니다", "진행하겠습니다", "진행합니다",
         "작성하겠습니다", "만들겠습니다", "확인하겠습니다", "확인해보고", "확인해 보겠습니다",
         "정리하겠습니다", "박아두겠습니다", "맞출게요", "처리하겠습니다", "수정하겠습니다",
         "바로 마무리", "지금 바로", "우선 실제", "실패 우회", "작업 중", "진행 중",
+        "하겠습니다", "하겠습니다.", "해두겠습니다", "놓겠습니다", "보겠습니다",
     )
     if any(marker in value for marker in nonfinal_markers):
         return False
     if value.startswith("시작보고") or value.startswith("시작 보고"):
         return False
     # If it is not an explicit progress/plan/blocked-in-progress message, treat
-    # the visible answer as a valid user-facing report. Some requests are
-    # explanatory ("정리해봐") and should not require commit/QA artifacts.
+    # ordinary Q/A answers as terminal. Work-item closure uses the stricter
+    # is_completion_report_text() below.
     return True
 
 
+def is_completion_report_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not is_final_work_report_text(value):
+        return False
+    normalized = " ".join(value.split())
+    outcome_markers = (
+        "완료", "끝났", "마쳤", "처리했습니다", "수정했습니다", "반영했습니다", "정리했습니다",
+        "검증", "통과", "커밋", "푸시", "배포", "업로드", "링크", "파일:", "경로:",
+        "아직", "막힘", "막혔", "차단", "실패", "못했습니다", "중단",
+    )
+    evidence_markers = (
+        "검증", "커밋", "푸시", "링크", "파일", "경로", "수정", "반영", "업로드",
+        "완료", "실패", "차단", "막힘", "아직", "0개", "개", "통과",
+    )
+    has_outcome = any(marker in normalized for marker in outcome_markers)
+    has_evidence = any(marker in normalized for marker in evidence_markers)
+    return has_outcome and has_evidence
+
+
 def close_latest_active_work_from_report(agent_id: str, session_key: str, text: str, ts: int | None = None) -> bool:
-    if not text or not is_final_work_report_text(text):
+    if not text or not is_completion_report_text(text):
         return False
     now = int(time.time() * 1000)
     report_ts = ts or now
@@ -866,7 +885,7 @@ def latest_visible_report_after(agent_id: str, after_ms: int) -> int:
         if ts <= after_ms:
             continue
         text = str(item.get("content") or "")
-        if is_final_work_report_text(text):
+        if is_completion_report_text(text):
             latest = max(latest, ts)
     return latest
 
@@ -2140,16 +2159,19 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             text,
             {"status": "done", "done": True, "pending": False, "error": False, "sessionKey": session_key, "role": "assistant", "hidden": False},
         )
-        emit_work_event(agent_id, "session.completed", "reported", session_key=session_key, request_id=request_id, summary=text)
         if close_completion_recovery_item(agent_id, request_id, text, session_key):
+            emit_work_event(agent_id, "session.completed", "reported", session_key=session_key, request_id=request_id, summary=text)
             return
-        if is_progress_only_report_text(text) or not is_final_work_report_text(text):
-            update_work_item(agent_id, request_id, "reporting", report=True)
-        elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
+        if text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
+            emit_work_event(agent_id, "session.failed", "failed", session_key=session_key, request_id=request_id, summary=text)
             update_work_item(agent_id, request_id, "failed", report=True, reason=text)
-        else:
+        elif is_completion_report_text(text):
+            emit_work_event(agent_id, "session.completed", "reported", session_key=session_key, request_id=request_id, summary=text)
             update_work_item(agent_id, request_id, "reported", report=True)
             close_latest_active_work_from_report(agent_id, session_key, text)
+        else:
+            emit_work_event(agent_id, "session.completed", "progress-only", session_key=session_key, request_id=request_id, summary=text)
+            update_work_item(agent_id, request_id, "reporting", report=True, reason="완료보고가 아니라 진행/착수/일반 답변입니다.")
     except Exception as exc:
         replace_history_message(
             agent_id,
