@@ -2922,10 +2922,44 @@ def active_work_log_has_terminal_marker(text: str) -> bool:
     return any(marker in text for marker in markers)
 
 
+def active_work_unit_is_alive(unit: dict[str, Any], now_ms: int) -> tuple[bool, str]:
+    unit_type = str(unit.get("type") or "")
+    session_key = str(unit.get("sessionKey") or "")
+    if unit_type == "subagent" or ":subagent:" in session_key:
+        if not session_key:
+            return False, "subagent sessionKey 없음"
+        try:
+            sessions = json.loads(agent_session_store_path("main").read_text())
+        except Exception as exc:
+            return False, f"subagent 세션 파일 확인 실패: {exc}"
+        row = sessions.get(session_key) if isinstance(sessions, dict) else None
+        if not isinstance(row, dict):
+            return False, "subagent 세션 없음"
+        normalized = normalize_status(str(row.get("status") or "unknown"))
+        updated = to_epoch_ms(row.get("updatedAt") or row.get("startedAt"))
+        stale_ms = max(0, now_ms - updated) if updated else SUBAGENT_ACTIVE_MAX_STALE_MS + 1
+        if normalized == "working" and stale_ms <= SUBAGENT_ACTIVE_MAX_STALE_MS:
+            return True, f"subagent {row.get('status') or 'running'} · {stale_ms // 1000}s 전 갱신"
+        if normalized == "working":
+            return False, f"subagent stale · {stale_ms // 1000}s 전 갱신"
+        return normalized in {"done"}, f"subagent {row.get('status') or 'unknown'}"
+    log = str(unit.get("log") or "")
+    command = str(unit.get("command") or "")
+    pid = str(unit.get("pid") or "")
+    text = tail_text(log) if log else ""
+    alive = bool(pid and Path(f"/proc/{pid}").exists()) or process_matches_hint(command[:80])
+    if alive:
+        return True, "process 확인됨"
+    if active_work_log_has_terminal_marker(text):
+        return True, "terminal log marker 확인됨"
+    return False, f"pid/log 확인 실패 · log={log or '-'}"
+
+
 def active_work_alerts() -> list[dict[str, Any]]:
     active = load_mylene_active_work()
     if not active:
         return []
+    now_ms = int(time.time() * 1000)
     alerts: list[dict[str, Any]] = []
     status = str(active.get("status") or "")
     title = str(active.get("title") or active.get("id") or "activeWork")
@@ -2933,12 +2967,10 @@ def active_work_alerts() -> list[dict[str, Any]]:
     running_units = [u for u in units if isinstance(u, dict) and u.get("status") == "running"]
     for unit in running_units:
         log = str(unit.get("log") or "")
-        command = str(unit.get("command") or "")
-        pid = str(unit.get("pid") or "")
-        alive = bool(pid and Path(f"/proc/{pid}").exists()) or process_matches_hint(command[:80])
+        alive, alive_reason = active_work_unit_is_alive(unit, now_ms)
         text = tail_text(log) if log else ""
         if not alive and not active_work_log_has_terminal_marker(text):
-            alerts.append({"kind": "active-work-orphan", "severity": "critical", "title": "activeWork running인데 실행 단위가 안 보임", "detail": f"{title} · unit={unit.get('label') or unit.get('type')} · log={log or '-'}"})
+            alerts.append({"kind": "active-work-orphan", "severity": "critical", "title": "activeWork running인데 실행 단위가 안 보임", "detail": f"{title} · unit={unit.get('label') or unit.get('type')} · {alive_reason}"})
         lowered = text.lower()
         if text and any(key in lowered for key in ["qa_report_artifacts=1", "publication_semantic=2", "semantic_static=2", "error:", "traceback"]):
             alerts.append({"kind": "active-work-log-failure", "severity": "critical", "title": "activeWork 로그 실패 감지", "detail": f"{title} · {unit.get('label') or unit.get('type')} · {log}"})
