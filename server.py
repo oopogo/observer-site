@@ -807,12 +807,18 @@ def observer_chat_session_key(agent_id: str) -> str:
 def effective_context_max_tokens(row: dict[str, Any] | None) -> int:
     if not isinstance(row, dict):
         return DEFAULT_CONTEXT_MAX_TOKENS
-    context_max_tokens = int(float(row.get("contextTokens") or DEFAULT_CONTEXT_MAX_TOKENS) or DEFAULT_CONTEXT_MAX_TOKENS)
+    explicit = int(float(row.get("contextTokens") or 0) or 0)
+    channel = str(row.get("channel") or "")
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    if explicit > 0 and (channel == "webchat" or origin.get("provider") == "webchat"):
+        return explicit
+    if explicit > 0:
+        return max(explicit, DEFAULT_CONTEXT_MAX_TOKENS)
     model = str(row.get("model") or "")
     provider = str(row.get("modelProvider") or "")
     if model.startswith("gpt-5") or provider == "openai-codex":
-        context_max_tokens = max(context_max_tokens, DEFAULT_CONTEXT_MAX_TOKENS)
-    return context_max_tokens
+        return DEFAULT_CONTEXT_MAX_TOKENS
+    return DEFAULT_CONTEXT_MAX_TOKENS
 
 
 def session_context_usage_ratio(row: dict[str, Any] | None) -> float:
@@ -832,12 +838,22 @@ def current_observer_chat_row_from_sessions(agent_id: str, sessions: list[dict[s
     return key, None
 
 
+def local_session_store_row(agent_id: str, key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(agent_session_store_path(agent_id).read_text())
+    except Exception:
+        return None
+    row = data.get(key) if isinstance(data, dict) else None
+    return row if isinstance(row, dict) else None
+
+
+
 def current_observer_chat_row(agent_id: str) -> dict[str, Any] | None:
     key = observer_chat_session_key(agent_id)
     for row in existing_agent_session_keys(agent_id):
         if str(row.get("key") or "") == key:
             return row
-    return None
+    return local_session_store_row(agent_id, key)
 
 
 def compact_local_chat_summary(agent_id: str, limit: int = 12) -> str:
@@ -1465,7 +1481,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         "--expect-final",
         "--json",
         "--timeout",
-        str(110_000),
+        str(900_000),
         "--params",
         json.dumps({"key": session_key, "message": message}, ensure_ascii=False),
     ]
@@ -1475,7 +1491,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
     env["NO_COLOR"] = "1"
     request_start_ms = int(time.time() * 1000) - 1000
     try:
-        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=130)
+        result = subprocess.run(args, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=930)
         raw = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0:
             if "session not found" in raw.lower():
@@ -1487,20 +1503,25 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         payload = parse_json_suffix(raw)
         text = None
         if is_transport_status_payload(payload):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=300)
         if not text:
             text = extract_response_text(payload)
         if not text or text in {"{}", "[]"} or is_internal_status_text(text):
-            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=30)
+            text = wait_for_agent_reply(session_key, request_start_ms, timeout_seconds=300)
         if text:
             text = strip_internal_report_contract(text)
         if text and is_progress_only_report_text(text):
-            final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=30)
+            final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=600)
             if final_text:
                 text = strip_internal_report_contract(final_text)
         fallback_used = False
         if not text or is_internal_status_text(text):
-            text = "응답을 못 받았습니다. 다시 짧게 물어보거나 지시해 주세요."
+            reason = "internal-status" if text and is_internal_status_text(text) else "empty-response"
+            text = (
+                f"실패: 에이전트 최종 응답이 비었습니다. "
+                f"agent={agent_id} session={session_key} reason={reason}. "
+                f"모델/라우팅/게이트웨이 상태 확인이 필요합니다."
+            )
             fallback_used = True
         replace_history_message(
             agent_id,
@@ -1538,13 +1559,20 @@ def cached_sessions_if_fresh() -> list[dict[str, Any]]:
 
 
 def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
-    # 채팅 UI 응답성을 위해 전송 요청 경로에서는 gateway 조회를 하지 않는다.
-    # 신선한 세션 캐시가 있을 때만 롤오버 판단을 하고, 없으면 현재/기본 채팅키로
-    # 즉시 pending을 반환한 뒤 백그라운드 sessions.send가 실제 전송을 처리한다.
+    # 채팅 UI 응답성을 위해 전송 요청 경로에서는 매번 gateway 조회를 하지 않는다.
+    # 대신 신선한 세션 캐시가 있으면 그걸 쓰고, 없더라도 로컬 세션 저장소의 최근
+    # 토큰 사용량은 확인해서 컨텍스트 포화 직전 세션을 계속 쓰는 일은 막는다.
     sessions = cached_sessions_if_fresh()
     if sessions:
         return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
-    return desired_observer_chat_session_key(agent_id), None
+    key = desired_observer_chat_session_key(agent_id)
+    row = local_session_store_row(agent_id, key)
+    if session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
+        summary = compact_local_chat_summary(agent_id)
+        result = create_new_observer_chat_session(agent_id, "context-auto-local")
+        handoff = build_observer_handoff_text(agent_id, summary)
+        return result["sessionKey"], handoff
+    return key, None
 
 
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
