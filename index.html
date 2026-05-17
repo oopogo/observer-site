@@ -471,6 +471,39 @@
         border-radius: 50%;
       }
 
+
+
+      .orb-stack {
+        display: grid;
+        justify-items: center;
+        align-content: start;
+        gap: 7px;
+      }
+
+      .model-chip {
+        max-width: 96px;
+        min-height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.16);
+        background: linear-gradient(135deg, rgba(255,255,255,.13), rgba(255,255,255,.045));
+        color: #eef8ff;
+        font-size: 10px;
+        font-weight: 950;
+        letter-spacing: .02em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        box-shadow: 0 8px 24px rgba(0,0,0,.22);
+      }
+
+      .model-chip.codex { border-color: rgba(105,215,255,.36); color: #dff7ff; }
+      .model-chip.kimi { border-color: rgba(167,139,250,.42); color: #efe7ff; }
+      .model-chip.claude { border-color: rgba(255,184,107,.42); color: #ffe8c6; }
+
       .agent.work {
         border-color: rgba(98, 230, 155, 0.45);
         background: rgba(98, 230, 155, 0.09);
@@ -2171,7 +2204,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1828';
+      const BUILD_ID = '2026-05-17-1832';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2427,6 +2460,41 @@
         return source || '출처미상';
       }
 
+
+      function compactModelLabel(agent) {
+        const raw = String(agent.contextModel || agent.model || agent.currentModel || agent.contextProvider || '').trim();
+        const provider = String(agent.contextProvider || '').toLowerCase();
+        const text = raw.toLowerCase();
+        if (!raw && !provider) return 'MODEL ?';
+        if (text.includes('gpt-5.5')) return 'GPT-5.5';
+        if (text.includes('gpt-5.4')) return 'GPT-5.4';
+        if (text.includes('gpt-5.3')) return 'GPT-5.3';
+        if (text.includes('gpt-5.2')) return 'GPT-5.2';
+        if (text.includes('gpt-5')) return 'GPT-5';
+        if (text.includes('kimi-k2.6') || text.includes('kimi-k2-6')) return 'Kimi K2.6';
+        if (text.includes('kimi-k2.5') || text.includes('kimi-k2-5')) return 'Kimi K2.5';
+        if (text.includes('kimi')) return 'Kimi';
+        if (text.includes('claude-opus')) return 'Claude Opus';
+        if (text.includes('claude-sonnet')) return 'Claude Sonnet';
+        if (text.includes('claude')) return 'Claude';
+        const tail = raw.split('/').pop() || raw;
+        return tail.replace(/^openai-/, '').replace(/-/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()).slice(0, 18);
+      }
+
+      function modelChipClass(agent) {
+        const text = String(agent.contextModel || agent.contextProvider || '').toLowerCase();
+        if (text.includes('kimi')) return 'kimi';
+        if (text.includes('claude')) return 'claude';
+        if (text.includes('gpt') || text.includes('codex')) return 'codex';
+        return '';
+      }
+
+      function renderModelChip(agent) {
+        const label = compactModelLabel(agent);
+        const full = [agent.contextModel, agent.contextProvider, agent.contextSource].filter(Boolean).join(' · ');
+        return `<span class="model-chip ${modelChipClass(agent)}" title="${escapeHtml(full || label)}">${escapeHtml(label)}</span>`;
+      }
+
       function renderContextBattery(agent) {
         const left = Math.max(0, Math.min(100, Number(agent.contextRemainingPercent ?? 100)));
         const used = Number(agent.contextTokens || 0);
@@ -2468,7 +2536,7 @@
         card.innerHTML = `
           ${unreadHtml}
           <span class="state-badge ${stateBadgeClass(agent.state, agent)}">${stateLabel(agent.state, agent)}</span>
-          <div class="orb">${orbContent}</div>
+          <div class="orb-stack"><div class="orb">${orbContent}</div>${renderModelChip(agent)}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)}</div>
             <div class="status">${escapeHtml(agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중')))}</div>
