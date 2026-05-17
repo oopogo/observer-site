@@ -3487,7 +3487,8 @@ def summarize_agents() -> dict[str, Any]:
         # because the observer-site chat history has no visible report yet.
         silence_base_ts = max(last_visible_report_ts, work_started_ts, live_activity_ts)
         silence_age_ms = max(0, now - silence_base_ts) if silence_base_ts else 0
-        needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= SILENCE_WARNING_MS
+        silence_threshold_ms = ACTIVE_SESSION_MAX_STALE_MS if recent_active else SILENCE_WARNING_MS
+        needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= silence_threshold_ms
         if needs_silence_report:
             status_text = "무음 경고" if state == "working" else f"{status_text} · 무음"
             silence_note = f"마지막 가시 보고 {silence_age_ms // 1000:,}초 전"
