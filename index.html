@@ -2207,7 +2207,7 @@
       const CHAT_REFRESH_MS = 30000;
       const CHAT_PENDING_REFRESH_MS = 3000;
       const CHAT_PENDING_REFRESH_WINDOW_MS = 120000;
-      const BUILD_ID = '2026-05-17-2012';
+      const BUILD_ID = '2026-05-17-2034';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2519,9 +2519,10 @@
       function renderTags(agent) {
         const workingTag = agent.recoveryCheckNeeded ? '회수 확인 필요' : (agent.isWorkingNow ? `실행중 ${agent.activeSessionCount || 1}` : (agent.reportDebt ? '보고 미수신' : (agent.isReportPending ? '보고 미수신' : (agent.isAssigned ? ((agent.statusText || '응답 미수신').replace('응답 대기', '응답 미수신')) : '대기'))));
         const silenceTag = agent.needsSilenceReport ? `무응답 ${Math.floor(Number(agent.silenceAgeMs || 0) / 60000)}분` : '';
-        const workTag = agent.activeWork ? '작업 등록됨' : '';
+        const workTag = agent.workHandoffCandidate ? '작업인계 후보' : (agent.activeWork ? '작업 등록됨' : '');
+        const chatTag = agent.chatRolloverCandidate ? `채팅전환:${agent.chatRolloverReason || '필요'}` : `채팅 ${formatTokenCount(agent.chatSessionTokens || 0)}`;
         const routeTag = agent.controlRoute === 'observer-web' ? 'WEB 제어' : '';
-        const tags = [agent.role, workingTag, silenceTag, workTag, routeTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 8);
+        const tags = [agent.role, workingTag, silenceTag, workTag, chatTag, routeTag, ...(agent.tags || []), agent.id].filter(Boolean).slice(0, 9);
         return `<div class="tag-row">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
       }
 

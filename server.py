@@ -100,9 +100,12 @@ COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS = 90
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
-CALL_ONLY_CHAT_MAX_TOKENS = 80_000
-CALL_ONLY_CHAT_MAX_AGE_MS = 6 * 60 * 60 * 1000
+CALL_ONLY_CHAT_MAX_TOKENS = 50_000
+CHAT_SOFT_MAX_TOKENS = 80_000
+CHAT_FORCE_MAX_TOKENS = 120_000
+CHAT_MAX_AGE_MS = 6 * 60 * 60 * 1000
 CHAT_STUCK_STALE_MS = 60 * 1000
+WORK_SESSION_HANDOFF_RATIO = 0.90
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
 HANDOFF_MAX_CHARS = 12000
 SILENCE_WARNING_MS = 15 * 60 * 1000
@@ -1034,6 +1037,24 @@ def agent_base(agent_id: str) -> dict[str, Any] | None:
     return apply_agent_settings(raw) if raw else None
 
 
+def session_kind(key: str, row: dict[str, Any] | None = None) -> str:
+    text = str(key or "")
+    if ":observer-site-chat" in text:
+        return "chat"
+    if ":subagent:" in text or (isinstance(row, dict) and row.get("spawnedBy")):
+        return "subagent"
+    if ":cron:" in text:
+        return "cron"
+    if ":mission-control:" in text or ":openresponses:" in text or "acp" in text.lower():
+        return "acp"
+    return "work"
+
+
+def chat_rollover_threshold(agent_id: str) -> int:
+    base = agent_base(agent_id)
+    return CALL_ONLY_CHAT_MAX_TOKENS if base and is_call_only_agent(base) else CHAT_SOFT_MAX_TOKENS
+
+
 def current_observer_chat_row_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
     rows = agent_session_key_rows(agent_id, sessions)
     key = observer_chat_session_key_from_rows(agent_id, rows)
@@ -1824,19 +1845,20 @@ def rollover_chat_session_with_handoff(agent_id: str, reason: str) -> tuple[str,
 
 
 def chat_session_should_rollover_for_speed(agent_id: str, row: dict[str, Any] | None) -> tuple[bool, str]:
-    base = agent_base(agent_id)
-    if not base or not is_call_only_agent(base) or not isinstance(row, dict):
+    if not isinstance(row, dict):
         return False, ""
     now_ms = int(time.time() * 1000)
-    status = str(row.get("status") or "").lower()
     stale_ms = session_stale_ms(row, now_ms)
     if session_is_busy_for_chat(row) and stale_ms >= CHAT_STUCK_STALE_MS:
-        return True, "call-only-stuck-session"
-    if int(row.get("totalTokens") or 0) >= CALL_ONLY_CHAT_MAX_TOKENS:
-        return True, "call-only-large-session"
+        return True, "chat-stuck-session"
+    tokens = int(row.get("totalTokens") or 0)
+    if tokens >= CHAT_FORCE_MAX_TOKENS:
+        return True, "chat-force-large-session"
+    if tokens >= chat_rollover_threshold(agent_id):
+        return True, "chat-large-session"
     started = to_epoch_ms(row.get("startedAt"))
-    if started and now_ms - started >= CALL_ONLY_CHAT_MAX_AGE_MS:
-        return True, "call-only-aged-session"
+    if started and now_ms - started >= CHAT_MAX_AGE_MS:
+        return True, "chat-aged-session"
     return False, ""
 
 
@@ -3603,6 +3625,11 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "무음 경고" if state == "working" else f"{status_text} · 무음"
             silence_note = f"마지막 가시 보고 {silence_age_ms // 1000:,}초 전"
             detail = f"무음 경고 · {silence_note} · {detail}"
+        latest_key = str(current.get("key") or "") if current else ""
+        chat_tokens = int((local_chat_session or chat_session or {}).get("totalTokens") or 0)
+        chat_should_rollover, chat_rollover_reason = chat_session_should_rollover_for_speed(base["id"], local_chat_session or chat_session)
+        runtime_kind = session_kind(latest_key, current)
+        work_handoff_candidate = bool(current and runtime_kind == "work" and session_context_usage_ratio(current, base["id"]) >= WORK_SESSION_HANDOFF_RATIO)
         agent_payload = {
             **base,
             "state": state,
@@ -3625,11 +3652,17 @@ def summarize_agents() -> dict[str, Any]:
             "selfWorkReportDue": self_work_report_due if base["id"] == "observer" else False,
             "controlRoute": "observer-web",
             "chatSessionKey": chat_key,
+            "chatSessionKind": "chat",
+            "chatSessionTokens": chat_tokens,
+            "chatRolloverCandidate": chat_should_rollover,
+            "chatRolloverReason": chat_rollover_reason,
+            "workHandoffCandidate": work_handoff_candidate,
             "isLagging": is_lagging,
             "ageSeconds": age_ms // 1000 if current else 0,
             "staleSeconds": stale_ms // 1000 if current else 0,
             "latestUpdatedAt": latest_updated,
-            "latestSessionKey": current.get("key") if current else None,
+            "latestSessionKey": latest_key or None,
+            "latestSessionKind": runtime_kind if latest_key else None,
             "latestPreview": current.get("lastMessagePreview") if current else None,
             "contextTokens": context_tokens,
             "contextMaxTokens": context_max_tokens,
