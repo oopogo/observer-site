@@ -915,15 +915,31 @@ def completed_unreported_work_item(agent_id: str) -> dict[str, Any] | None:
     if not isinstance(items, list):
         return None
     candidates = []
+    changed = False
     for item in items:
         if not isinstance(item, dict) or item.get("status") not in {"completed", "completed-unreported", "report-recovery-requested"}:
             continue
         completed_at = int(item.get("completedAt") or item.get("updatedAt") or 0)
-        if completed_at and latest_visible_report_after(agent_id, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000):
+        started_at = int(item.get("startedAt") or 0)
+        # Recovery/completion reports are often posted in a follow-up turn such
+        # as "다 했니?" rather than the original requestId. If any later
+        # user-visible final report exists after the work started, close the
+        # completion debt instead of keeping the card stuck in 보고 대기.
+        report_after_ms = started_at or max(0, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000)
+        report_ts = latest_visible_report_after(agent_id, report_after_ms)
+        if report_ts:
             item["status"] = "reported"
-            item["reportedAt"] = latest_visible_report_after(agent_id, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000)
+            item["reportedAt"] = report_ts
+            item["lastReportAt"] = report_ts
+            item["updatedAt"] = max(int(time.time() * 1000), report_ts)
+            item["reason"] = "later visible completion report observed"
+            changed = True
             continue
         candidates.append(item)
+    if changed:
+        data = load_work_state()
+        data[agent_id] = items
+        save_work_state(data)
     if candidates:
         candidates.sort(key=lambda row: int(row.get("completedAt") or row.get("updatedAt") or 0), reverse=True)
         return candidates[0]
@@ -1136,6 +1152,9 @@ def observer_chat_session_key_from_rows(agent_id: str, rows: list[dict[str, Any]
     desired = desired_observer_chat_session_key(agent_id)
     base_key = base_observer_chat_session_key(agent_id)
     keys = [str(row.get("key") or "") for row in rows]
+    configured = load_active_chat_sessions().get(agent_id)
+    if configured and (configured == base_key or configured.startswith(base_key + ":")):
+        return configured
     if desired in keys:
         return desired
     rotated = [key for key in keys if key.startswith(base_key + ":")]
@@ -2924,7 +2943,7 @@ def latest_report_pending_ms(agent_id: str) -> int:
         return 0
     for item in entries:
         ts = int(item.get("ts") or 0)
-        if ts <= latest_user_ts or item.get("role") != "assistant" or item.get("status") not in {"done", "error", "synced"}:
+        if ts <= latest_user_ts or item.get("role") not in {"assistant", "system"} or item.get("status") not in {"done", "error", "synced"}:
             continue
         content = str(item.get("content") or "")
         if is_internal_status_text(content):
