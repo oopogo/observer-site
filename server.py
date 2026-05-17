@@ -262,15 +262,57 @@ def save_read_state(data: dict[str, int]) -> None:
     READ_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def is_public_chat_visible(item: dict[str, Any]) -> bool:
+    if item.get("hidden"):
+        return False
+    status = item.get("status")
+    if status in {"pending", "stale-pending", "expired"}:
+        return False
+    if item.get("role") == "assistant" and status == "synced" and not item.get("visibleSync"):
+        return False
+    content = str(item.get("content") or "")
+    if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
+        return False
+    if item.get("quickAck") or item.get("harnessFallback"):
+        return False
+    if content.startswith("실패: 에이전트 최종 응답이 비었습니다"):
+        return False
+    if "관제 하네스가 대신 정리합니다" in content or "응답 회수 중입니다" in content:
+        return False
+    if content.startswith("백그라운드 실행을 시작"):
+        return False
+    return not is_internal_status_text(content)
+
+
+def public_chat_messages(agent_id: str, limit: int | None = 80) -> list[dict[str, Any]]:
+    entries = load_history().get(agent_id, [])
+    source = entries[-limit:] if limit else entries
+    visible: list[dict[str, Any]] = []
+    seen_content_by_base_request: dict[str, set[str]] = {}
+    for item in source:
+        if not isinstance(item, dict) or not is_public_chat_visible(item):
+            continue
+        content = strip_internal_report_contract(str(item.get("content") or ""))
+        request_id = str(item.get("requestId") or "")
+        base_request_id = request_id.removeprefix("silence-")
+        normalized_content = " ".join(content.split())
+        if request_id.startswith("silence-") and normalized_content in seen_content_by_base_request.get(base_request_id, set()):
+            continue
+        if base_request_id:
+            seen_content_by_base_request.setdefault(base_request_id, set()).add(normalized_content)
+        visible.append({**item, "content": content} if "[관제 보고 규칙]" in str(item.get("content") or "") else item)
+    return visible[-limit:] if limit else visible
+
+
 def mark_agent_read(agent_id: str) -> None:
     state = load_read_state()
-    now_ms = int(time.time() * 1000)
     previous = int(state.get(agent_id, 0) or 0)
-    # Chat panes poll frequently. Avoid rewriting read-state and invalidating
-    # /api/agents cache on every poll; once every 10s is enough for badges.
-    if now_ms - previous < 10_000:
+    latest_visible_ts = max((int(item.get("ts") or 0) for item in public_chat_messages(agent_id, limit=None)), default=0)
+    now_ms = int(time.time() * 1000)
+    next_read = max(now_ms, latest_visible_ts)
+    if next_read <= previous:
         return
-    state[agent_id] = now_ms
+    state[agent_id] = next_read
     save_read_state(state)
     invalidate_agents_cache()
 
@@ -279,22 +321,13 @@ def unread_count(agent_id: str) -> int:
     read_state = load_read_state()
     if agent_id not in read_state:
         return 0
-    last_read = read_state.get(agent_id, 0)
+    last_read = int(read_state.get(agent_id, 0) or 0)
     count = 0
-    for item in load_history().get(agent_id, []):
-        ts = int(item.get("ts") or 0)
-        if ts <= last_read:
+    for item in public_chat_messages(agent_id, limit=None):
+        if item.get("role") == "user":
             continue
-        role = item.get("role")
-        status = item.get("status")
-        content = str(item.get("content") or "")
-        if item.get("hidden"):
-            continue
-        if role == "user" or status in {"pending", "expired", "stale-pending", "recovery-requested", "abort-requested", "filtered-rawdump", "filtered-reasoning", "internal-status"}:
-            continue
-        if content.startswith("전달됨") or content.startswith("응답 대기") or content.startswith("관제 화면에서 상태 재확인"):
-            continue
-        count += 1
+        if int(item.get("ts") or 0) > last_read:
+            count += 1
     return count
 
 def parse_json_suffix(raw: str) -> Any:
@@ -1280,51 +1313,7 @@ def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -
     # 세션키가 겹칠 때 도구 로그/다른 흐름을 채팅창에 섞는다.
     if mark_read:
         mark_agent_read(agent_id)
-    messages = load_history().get(agent_id, [])[-80:]
-
-    def is_visible(item: dict[str, Any]) -> bool:
-        if item.get("hidden"):
-            return False
-        status = item.get("status")
-        if status in {"stale-pending", "expired"}:
-            return False
-        if item.get("role") == "assistant" and status == "synced" and not item.get("visibleSync"):
-            return False
-        content = str(item.get("content") or "")
-        if status == "pending":
-            return False
-        if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
-            return False
-        if item.get("quickAck") or item.get("harnessFallback"):
-            return False
-        if content.startswith("실패: 에이전트 최종 응답이 비었습니다"):
-            return False
-        if "관제 하네스가 대신 정리합니다" in content or "응답 회수 중입니다" in content:
-            return False
-        if content.startswith("백그라운드 실행을 시작"):
-            return False
-        return not is_internal_status_text(content)
-
-    visible = []
-    seen_content_by_base_request: dict[str, set[str]] = {}
-    for item in messages:
-        if not is_visible(item):
-            continue
-        content = strip_internal_report_contract(str(item.get("content") or ""))
-        request_id = str(item.get("requestId") or "")
-        base_request_id = request_id.removeprefix("silence-")
-        normalized_content = " ".join(content.split())
-        if request_id.startswith("silence-") and normalized_content in seen_content_by_base_request.get(base_request_id, set()):
-            # Auto silence nudge can race with the original turn and receive the
-            # exact same assistant reply. Keep the audit trail in storage, but
-            # do not show duplicate bubbles in the operator chat.
-            continue
-        if base_request_id:
-            seen_content_by_base_request.setdefault(base_request_id, set()).add(normalized_content)
-        if "[관제 보고 규칙]" in str(item.get("content") or ""):
-            item = {**item, "content": content}
-        visible.append(item)
-    return {"ok": True, "agentId": agent_id, "messages": visible[-80:]}
+    return {"ok": True, "agentId": agent_id, "messages": public_chat_messages(agent_id, limit=80)}
 
 def extract_response_text(payload: Any) -> str:
     if isinstance(payload, str):
