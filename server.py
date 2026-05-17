@@ -47,6 +47,7 @@ WORK_STATE_PATH = DATA_DIR / "work-state.json"
 SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
 MYLENE_WORK_REPORT_RELAY_PATH = DATA_DIR / "mylene-work-report-relay.json"
 MYLENE_HEARTBEAT_STATE_PATH = Path("/home/oopogo/.openclaw/workspace/memory/heartbeat-state.json")
+CRON_JOBS_PATH = Path("/home/oopogo/.openclaw/cron/jobs.json")
 ACP_SESSION_DIRS = [
     Path("/home/oopogo/.openclaw/workspace/state/sessions"),
     Path("/home/oopogo/.openclaw/workspace-observer/state/sessions"),
@@ -2022,6 +2023,69 @@ def gateway_process_health(pid: int) -> dict[str, Any]:
     return health
 
 
+
+
+def cron_schedule_label(schedule: dict[str, Any]) -> str:
+    if not isinstance(schedule, dict):
+        return "일정 없음"
+    kind = str(schedule.get("kind") or "").strip()
+    if kind == "cron":
+        return f"cron {schedule.get('expr') or '-'} · {schedule.get('tz') or 'local'}"
+    if kind:
+        return f"{kind} · {schedule.get('expr') or schedule.get('at') or '-'}"
+    return str(schedule or "일정 없음")
+
+
+def summarize_cron_jobs() -> dict[str, Any]:
+    generated = int(time.time() * 1000)
+    try:
+        data = json.loads(CRON_JOBS_PATH.read_text())
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "generatedAt": generated, "jobs": [], "counts": {"total": 0, "enabled": 0, "disabled": 0}}
+    raw_jobs = data.get("jobs") if isinstance(data, dict) else data
+    jobs = raw_jobs if isinstance(raw_jobs, list) else []
+    output = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        state = job.get("state") if isinstance(job.get("state"), dict) else {}
+        message = str(payload.get("message") or "")
+        output.append({
+            "id": str(job.get("id") or ""),
+            "name": str(job.get("name") or "이름 없음"),
+            "description": str(job.get("description") or ""),
+            "agentId": job.get("agentId"),
+            "enabled": bool(job.get("enabled")),
+            "schedule": job.get("schedule") if isinstance(job.get("schedule"), dict) else {},
+            "scheduleText": cron_schedule_label(job.get("schedule") if isinstance(job.get("schedule"), dict) else {}),
+            "sessionKey": job.get("sessionKey"),
+            "sessionTarget": job.get("sessionTarget"),
+            "wakeMode": job.get("wakeMode"),
+            "delivery": job.get("delivery") if isinstance(job.get("delivery"), dict) else {},
+            "timeoutSeconds": payload.get("timeoutSeconds"),
+            "payloadKind": payload.get("kind"),
+            "messagePreview": " ".join(message.split())[:260],
+            "createdAtMs": job.get("createdAtMs"),
+            "state": state,
+            "lastRunAtMs": state.get("lastRunAtMs") or state.get("lastStartedAtMs") or state.get("lastFiredAtMs"),
+            "lastStatus": state.get("lastStatus") or state.get("status"),
+            "lastError": state.get("lastError") or state.get("error"),
+        })
+    output.sort(key=lambda item: (not item.get("enabled"), str(item.get("agentId") or ""), str(item.get("name") or "")))
+    enabled = sum(1 for item in output if item.get("enabled"))
+    by_agent: dict[str, int] = {}
+    for item in output:
+        key = str(item.get("agentId") or "unknown")
+        by_agent[key] = by_agent.get(key, 0) + 1
+    return {
+        "ok": True,
+        "generatedAt": generated,
+        "path": str(CRON_JOBS_PATH),
+        "version": data.get("version") if isinstance(data, dict) else None,
+        "jobs": output,
+        "counts": {"total": len(output), "enabled": enabled, "disabled": len(output) - enabled, "byAgent": by_agent},
+    }
 def summarize_gateway_status() -> dict[str, Any]:
     generated = int(time.time() * 1000)
     started = time.time()
@@ -3607,6 +3671,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/observer/self-work":
             self.json_response({"ok": True, "state": load_self_work_state(), "active": active_self_work_item()})
+            return
+        if path == "/api/cron/jobs":
+            payload = summarize_cron_jobs()
+            self.json_response(payload, 200 if payload.get("ok") else 500)
             return
         if path == "/api/gateway-status":
             cached = cache_get("gateway")

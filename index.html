@@ -1760,6 +1760,68 @@
         font: inherit;
       }
 
+
+
+      .cron-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .cron-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .cron-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.13);
+        background: rgba(255,255,255,.07);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 850;
+      }
+
+      .cron-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+      }
+
+      .cron-card {
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 22px;
+        padding: 14px;
+        background: rgba(255,255,255,.055);
+      }
+
+      .cron-card.disabled {
+        opacity: .62;
+        border-style: dashed;
+      }
+
+      .cron-head {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .cron-name { font-weight: 950; letter-spacing: -.03em; }
+      .cron-desc { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .cron-meta { margin-top: 10px; display: grid; gap: 5px; color: #c8d7e8; font-size: 12px; }
+      .cron-status { border-radius: 999px; padding: 5px 9px; font-weight: 900; font-size: 11px; white-space: nowrap; }
+      .cron-status.on { color: #042016; background: linear-gradient(135deg, #7df6b1, #38d98a); }
+      .cron-status.off { color: #2b1220; background: linear-gradient(135deg, #ff9abb, #ff6b94); }
+      .cron-preview { margin-top: 10px; color: #9fb1c7; font-size: 11px; line-height: 1.45; max-height: 48px; overflow: hidden; }
+
       @media (max-width: 1100px) {
         .summary { grid-template-columns: repeat(7, minmax(72px, 1fr)); overflow-x: auto; padding-bottom: 2px; }
       }
@@ -1787,6 +1849,7 @@
           <button class="tab" type="button" id="agentTabButton">에이전트</button>
           <button class="tab secondary" type="button" id="officeTabButton">사무실</button>
           <button class="tab secondary" type="button" id="chatTabButton">채팅</button>
+          <button class="tab secondary" type="button" id="cronTabButton">Cron</button>
           <button class="tab secondary" type="button" id="editAgentsButton">편집</button>
         </nav>
       </header>
@@ -1892,6 +1955,20 @@
             </div>
           </section>
         </section>
+      </div>
+
+
+      <div class="view hidden" id="cronView">
+        <section class="cron-toolbar" aria-label="Cron 등록 상황">
+          <div>
+            <div class="eyebrow">OpenClaw Cron</div>
+            <h2 style="margin:4px 0 0;font-size:28px;letter-spacing:-.04em;">정기 작업 등록 상황</h2>
+          </div>
+          <button class="recover-button compact" type="button" id="cronRefreshButton">새로고침</button>
+        </section>
+        <section class="cron-summary" id="cronSummary"><span class="cron-pill">Cron 정보를 불러오는 중</span></section>
+        <section class="cron-list" id="cronList"><article class="cron-card"><div class="cron-name">불러오는 중</div><div class="cron-desc">/home/oopogo/.openclaw/cron/jobs.json 을 읽습니다.</div></article></section>
+        <p class="hint">이 탭은 로컬 cron 등록 파일만 읽습니다. Gateway sessions.list를 호출하지 않으므로 관제 부하를 만들지 않습니다.</p>
       </div>
 
       <div class="chat-backdrop" id="chatBackdrop" aria-hidden="true">
@@ -2061,10 +2138,15 @@
       const agentTabButton = document.getElementById('agentTabButton');
       const officeTabButton = document.getElementById('officeTabButton');
       const chatTabButton = document.getElementById('chatTabButton');
+      const cronTabButton = document.getElementById('cronTabButton');
       const agentView = document.getElementById('agentView');
       const officeView = document.getElementById('officeView');
       const officeLayout = document.getElementById('officeLayout');
       const multiChatView = document.getElementById('multiChatView');
+      const cronView = document.getElementById('cronView');
+      const cronSummary = document.getElementById('cronSummary');
+      const cronList = document.getElementById('cronList');
+      const cronRefreshButton = document.getElementById('cronRefreshButton');
       const multiChatAgentList = document.getElementById('multiChatAgentList');
       const multiChatGrid = document.getElementById('multiChatGrid');
       const editAgentsButton = document.getElementById('editAgentsButton');
@@ -2089,7 +2171,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-14-1244';
+      const BUILD_ID = '2026-05-17-1739';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2570,17 +2652,75 @@
       }
 
 
+
+      function formatCronTime(ms) {
+        const num = Number(ms || 0);
+        if (!num) return '-';
+        try { return new Date(num).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (_) { return '-'; }
+      }
+
+      function renderCronJobs(payload) {
+        const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+        const counts = payload.counts || {};
+        const byAgent = counts.byAgent || {};
+        cronSummary.innerHTML = [
+          `전체 ${counts.total ?? jobs.length}`,
+          `활성 ${counts.enabled ?? jobs.filter((j) => j.enabled).length}`,
+          `비활성 ${counts.disabled ?? jobs.filter((j) => !j.enabled).length}`,
+          ...Object.entries(byAgent).map(([agent, count]) => `${agent} ${count}`),
+        ].map((text) => `<span class="cron-pill">${escapeHtml(text)}</span>`).join('');
+        if (!jobs.length) {
+          cronList.innerHTML = '<article class="cron-card"><div class="cron-name">등록된 Cron 없음</div><div class="cron-desc">jobs.json에 작업이 없습니다.</div></article>';
+          return;
+        }
+        cronList.innerHTML = jobs.map((job) => {
+          const cls = job.enabled ? 'on' : 'off';
+          const delivery = job.delivery && job.delivery.mode ? ` · 전달 ${job.delivery.mode}` : '';
+          const last = job.lastRunAtMs ? `마지막 실행 ${formatCronTime(job.lastRunAtMs)}` : '마지막 실행 기록 없음';
+          const err = job.lastError ? `<div>오류: ${escapeHtml(job.lastError)}</div>` : '';
+          return `<article class="cron-card ${job.enabled ? '' : 'disabled'}">
+            <div class="cron-head"><div><div class="cron-name">${escapeHtml(job.name || job.id || '이름 없음')}</div><div class="cron-desc">${escapeHtml(job.description || '')}</div></div><span class="cron-status ${cls}">${job.enabled ? '활성' : '비활성'}</span></div>
+            <div class="cron-meta">
+              <div>에이전트: ${escapeHtml(job.agentId || '-')}</div>
+              <div>일정: ${escapeHtml(job.scheduleText || '-')}</div>
+              <div>대상: ${escapeHtml(job.sessionTarget || job.sessionKey || '-')}</div>
+              <div>Payload: ${escapeHtml(job.payloadKind || '-')}${job.timeoutSeconds ? ` · timeout ${escapeHtml(job.timeoutSeconds)}s` : ''}${escapeHtml(delivery)}</div>
+              <div>${escapeHtml(last)}${job.lastStatus ? ` · ${escapeHtml(job.lastStatus)}` : ''}</div>
+              ${err}
+            </div>
+            ${job.messagePreview ? `<div class="cron-preview">${escapeHtml(job.messagePreview)}</div>` : ''}
+          </article>`;
+        }).join('');
+      }
+
+      async function loadCronJobs() {
+        if (!cronSummary || !cronList) return;
+        try {
+          const res = await fetch('/api/cron/jobs', { cache: 'no-store' });
+          const payload = await readJsonResponse(res, 'Cron 정보');
+          if (!payload.ok) throw new Error(payload.error || 'Cron 조회 실패');
+          renderCronJobs(payload);
+        } catch (error) {
+          cronSummary.innerHTML = '<span class="cron-pill">조회 실패</span>';
+          cronList.innerHTML = `<article class="cron-card"><div class="cron-name">Cron 조회 실패</div><div class="cron-desc">${escapeHtml(String(error))}</div></article>`;
+        }
+      }
+
       function switchMainView(view) {
         const officeMode = view === 'office';
         const chatMode = view === 'chat';
-        agentView.classList.toggle('hidden', officeMode || chatMode);
+        const cronMode = view === 'cron';
+        agentView.classList.toggle('hidden', officeMode || chatMode || cronMode);
         officeView.classList.toggle('hidden', !officeMode);
         multiChatView.classList.toggle('hidden', !chatMode);
-        agentTabButton.classList.toggle('secondary', officeMode || chatMode);
+        cronView.classList.toggle('hidden', !cronMode);
+        agentTabButton.classList.toggle('secondary', officeMode || chatMode || cronMode);
         officeTabButton.classList.toggle('secondary', !officeMode);
         chatTabButton.classList.toggle('secondary', !chatMode);
+        cronTabButton.classList.toggle('secondary', !cronMode);
         if (officeMode) renderOfficeView();
         if (chatMode) renderMultiChatAgentList();
+        if (cronMode) loadCronJobs();
       }
 
       function isNodeNearBottom(node) {
