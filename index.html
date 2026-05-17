@@ -2536,7 +2536,7 @@
         card.dataset.accent = agent.state === 'idle' ? 'idle' : 'work';
         card.dataset.agentId = agent.id;
         const orbContent = agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="" />` : `${agent.orb || agent.name.slice(0, 1)}`;
-        const unread = Number(agent.unreadCount || 0);
+        const unread = displayUnreadCount(agent);
         const unreadHtml = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
         card.innerHTML = `
           ${unreadHtml}
@@ -2857,8 +2857,10 @@
         const panelState = openChatPanels.get(agentId);
         if (!panelState) return;
         try {
-          const messages = await loadHistory(agentId, Boolean(options.markRead), Boolean(options.sync));
+          const shouldMarkRead = options.markRead !== undefined ? Boolean(options.markRead) : !document.hidden;
+          const messages = await loadHistory(agentId, shouldMarkRead, Boolean(options.sync));
           renderPanelMessages(panelState.el, messages, options);
+          if (shouldMarkRead) loadAgents();
         } catch (error) {
           renderPanelMessages(panelState.el, [{ role: 'system', content: `대화 기록 조회 실패: ${error}` }], { forceScroll: true });
         }
@@ -2880,7 +2882,7 @@
           const button = document.createElement('button');
           button.type = 'button';
           button.className = `chat-agent-button ${openChatPanels.has(agent.id) ? 'open' : ''}`;
-          const unread = Number(agent.unreadCount || 0);
+          const unread = displayUnreadCount(agent);
           const ball = agent.avatar ? `<span class="chat-agent-ball"><img src="${escapeHtml(agent.avatar)}" alt="" /></span>` : `<span class="chat-agent-ball">${escapeHtml(agent.orb || (agent.name || agent.id).slice(0,1))}</span>`;
           button.innerHTML = `${ball}${unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : ''}<span class="small">${escapeHtml(agent.name || agent.id)}</span>`;
           button.addEventListener('click', () => toggleMultiChatPanel(agent.id));
@@ -3319,12 +3321,25 @@
         return payload.messages || [];
       }
 
+      function isAgentVisiblyOpen(agentId) {
+        if (!agentId) return false;
+        if (backdrop.classList.contains('open') && selectedAgent === agentId) return true;
+        return openChatPanels.has(agentId);
+      }
+
+      function displayUnreadCount(agent) {
+        if (!agent) return 0;
+        return isAgentVisiblyOpen(agent.id) ? 0 : Number(agent.unreadCount || 0);
+      }
+
       async function refreshOpenChatHistory(expectedAgent = selectedAgent, requestSeq = chatRequestSeq) {
         if (!backdrop.classList.contains('open') || !expectedAgent) return;
         try {
-          const messages = await loadHistory(expectedAgent, false);
+          const shouldMarkRead = !document.hidden;
+          const messages = await loadHistory(expectedAgent, shouldMarkRead);
           if (requestSeq !== chatRequestSeq || selectedAgent !== expectedAgent || !backdrop.classList.contains('open')) return;
           if (messages.length) renderMessages(messages);
+          if (shouldMarkRead) loadAgents();
         } catch (_) {
           // keep current UI state
         }
