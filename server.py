@@ -61,6 +61,10 @@ AGENTS = [
     {"id": "lina", "name": "리나", "orb": "리", "role": "게임개발 에이전트", "tags": ["GAMEDEV", "CALL-ONLY", "게임"]},
     {"id": "mediacontentproducer", "name": "미디어", "orb": "미", "role": "콘텐츠 프로듀서", "tags": ["MEDIA", "CRON-PAUSED", "콘텐츠"]},
 ]
+
+
+def is_call_only_agent(agent: dict[str, Any]) -> bool:
+    return "CALL-ONLY" in {str(tag).upper() for tag in (agent.get("tags") or [])}
 CACHE_TTL_SECONDS = 8
 GATEWAY_CACHE_TTL_SECONDS = 30
 GATEWAY_SESSION_SUMMARY_ENABLED = False
@@ -3493,6 +3497,13 @@ def summarize_agents() -> dict[str, Any]:
             status_text = "보고 대기"
             started = int(active_work.get("startedAt") or now)
             detail = f"보고 대기 · 등록 작업 최종 보고 없음 · 요청 {(now - started) // 1000:,}초 전"
+        call_only_waiting = is_call_only_agent(base) and state in {"assigned", "reporting"}
+        if call_only_waiting:
+            wait_started = pending_assignment_ms or int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else pending_assignment_ms
+            wait_age_s = max(0, (now - int(wait_started or now)) // 1000)
+            state = "working"
+            status_text = "작업 중"
+            detail = f"작업 중 · 응답 생성/회수 대기 · 요청 {wait_age_s:,}초 전"
         last_visible_report_ts = latest_visible_agent_report_ts(base["id"], agent_sessions, chat_key)
         work_started_ts = int(active_work.get("startedAt") or 0) if isinstance(active_work, dict) else 0
         live_activity_ts = current_updated if recent_active else 0
@@ -3501,7 +3512,7 @@ def summarize_agents() -> dict[str, Any]:
         silence_base_ts = max(last_visible_report_ts, work_started_ts, live_activity_ts)
         silence_age_ms = max(0, now - silence_base_ts) if silence_base_ts else 0
         silence_threshold_ms = ACTIVE_SESSION_MAX_STALE_MS if recent_active else SILENCE_WARNING_MS
-        needs_silence_report = state in {"working", "assigned", "reporting"} and silence_age_ms >= silence_threshold_ms
+        needs_silence_report = (not call_only_waiting) and state in {"working", "assigned", "reporting"} and silence_age_ms >= silence_threshold_ms
         if needs_silence_report:
             status_text = "무음 경고" if state == "working" else f"{status_text} · 무음"
             silence_note = f"마지막 가시 보고 {silence_age_ms // 1000:,}초 전"
