@@ -435,7 +435,7 @@ def agent_completion_reports(agent_id: str = "main", limit: int = 50) -> dict[st
         is_visible_final = role == "assistant" and status in {"done", "synced", "error", ""} and is_visible_completion_report_text(content, status)
         if not is_mylene_relay and not is_visible_final and not is_completion_report_content(content, status):
             continue
-        if item.get("quickAck") and "듣고 있습니다" in content:
+        if item.get("quickAck") or item.get("harnessFallback"):
             continue
         lines = [line.strip("- #*").strip() for line in content.splitlines() if line.strip()]
         task = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("작업:")), "")
@@ -1295,7 +1295,11 @@ def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -
             return False
         if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
             return False
+        if item.get("quickAck") or item.get("harnessFallback"):
+            return False
         if content.startswith("실패: 에이전트 최종 응답이 비었습니다"):
+            return False
+        if "관제 하네스가 대신 정리합니다" in content or "응답 회수 중입니다" in content:
             return False
         if content.startswith("백그라운드 실행을 시작"):
             return False
@@ -1463,6 +1467,7 @@ def is_internal_status_text(text: str) -> bool:
         "All models failed",
         "Logs: openclaw logs",
         "실패: 에이전트 최종 응답이 비었습니다",
+        "응답 회수 중입니다",
     )
     return stripped.startswith(bad_prefixes)
 
@@ -1744,27 +1749,24 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             final_text = wait_for_non_progress_agent_reply(session_key, request_start_ms, timeout_seconds=600)
             if final_text:
                 text = strip_internal_report_contract(final_text)
-        fallback_used = False
         if not text or is_internal_status_text(text):
-            # Empty responses here are usually a bridge/collection race, not a
-            # useful agent-facing failure. Keep the operator UI out of the
-            # scary "final response is empty" loop and leave the request in a
-            # recoverable reporting state instead of stamping a hard failure.
-            text = (
-                "응답 회수 중입니다. 에이전트 실행은 계속 확인하고 있으며, "
-                "완료보고가 도착하면 이 메시지를 실제 응답으로 교체합니다."
+            replace_history_message(
+                agent_id,
+                request_id,
+                "system",
+                "",
+                {"status": "pending", "pending": True, "done": False, "sessionKey": session_key, "hidden": True},
             )
-            fallback_used = True
+            update_work_item(agent_id, request_id, "reporting", report=True)
+            return
         replace_history_message(
             agent_id,
             request_id,
             "system",
             text,
-            {"status": "error" if fallback_used else "done", "done": True, "pending": False, "error": fallback_used, "sessionKey": session_key, "role": "assistant", "harnessFallback": fallback_used},
+            {"status": "done", "done": True, "pending": False, "error": False, "sessionKey": session_key, "role": "assistant"},
         )
-        if fallback_used:
-            update_work_item(agent_id, request_id, "reporting", report=True)
-        elif is_progress_only_report_text(text) or not is_final_work_report_text(text):
+        if is_progress_only_report_text(text) or not is_final_work_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
             update_work_item(agent_id, request_id, "failed", report=True, reason=text)
@@ -1822,13 +1824,6 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     if handoff_summary:
         outbound_message = f"{handoff_summary}\n\n[새 요청]\n{outbound_message}"
     append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
-    # 게임개발 호출형 에이전트는 '테스트/대답해' 같은 짧은 입력도 실제 에이전트에게
-    # 보내서 성격과 역할이 드러나는 답을 받는다. 빈 '듣고 있습니다' 응답은 관제 UX를 해친다.
-    quick_reply = None if agent_id == "lina" else quick_ping_reply(agent["name"], cleaned_message, saved_attachments)
-    if quick_reply:
-        append_history(agent_id, "assistant", quick_reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "quickAck": True})
-        history_payload = public_history(agent_id, mark_read=False)
-        return {"ok": True, "accepted": True, "pending": False, "quickAck": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
     if is_work_request_message(cleaned_message, saved_attachments):
         register_work_item(agent_id, request_id, outbound_message, session_key)
@@ -2601,22 +2596,10 @@ def sanitize_internal_done_messages() -> int:
             if not is_internal_status_text(content):
                 continue
             request_id = str(item.get("requestId") or "")
-            if content.strip() in {"NO_REPLY", "HEARTBEAT_OK"} and request_id:
-                request_ts = 0
-                for peer in entries:
-                    if peer.get("requestId") == request_id and peer.get("role") == "user":
-                        request_ts = int(peer.get("ts") or 0)
-                        break
-                item["content"] = build_harness_status_reply(agent_id, str(agent_name or agent_id), str(item.get("sessionKey") or observer_chat_session_key(agent_id)), "", request_ts or int(item.get("ts") or 0), content.strip())
-                item["status"] = "done"
-                item["harnessFallback"] = True
-                item["done"] = True
-                item["pending"] = False
-                item.pop("hidden", None)
-            else:
-                item["status"] = "internal-status"
-                item["hidden"] = True
-                item["pending"] = False
+            item["status"] = "internal-status"
+            item["hidden"] = True
+            item["pending"] = False
+            item.pop("harnessFallback", None)
             changed += 1
     if changed:
         save_history(history)
