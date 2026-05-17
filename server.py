@@ -930,11 +930,15 @@ def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> d
 
 def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, str | None]:
     key, row = current_observer_chat_row_from_sessions(agent_id, sessions)
-    if not session_is_busy_for_chat(row) and session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
+    # Do not rotate merely because a chat session is marked running/queued.
+    # Those statuses often remain after gateway timeouts and caused pointless
+    # observer-site-chat:YYYYMMDDHHMMSS churn. Only context pressure may trigger
+    # an automatic rollover; busy/stuck recovery should be manual or handled by
+    # the gateway queue.
+    if session_context_usage_ratio(row) < CONTEXT_ROLLOVER_RATIO:
         return key, None
     summary = compact_local_chat_summary(agent_id)
-    reason = "busy-auto" if session_is_busy_for_chat(row) else "context-auto"
-    result = create_new_observer_chat_session(agent_id, reason)
+    result = create_new_observer_chat_session(agent_id, "context-auto")
     handoff = build_observer_handoff_text(agent_id, summary)
     return result["sessionKey"], handoff
 
@@ -1582,10 +1586,9 @@ def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
         return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
     key = desired_observer_chat_session_key(agent_id)
     row = local_session_store_row(agent_id, key)
-    if session_is_busy_for_chat(row) or session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
+    if session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
         summary = compact_local_chat_summary(agent_id)
-        reason = "busy-auto-local" if session_is_busy_for_chat(row) else "context-auto-local"
-        result = create_new_observer_chat_session(agent_id, reason)
+        result = create_new_observer_chat_session(agent_id, "context-auto-local")
         handoff = build_observer_handoff_text(agent_id, summary)
         return result["sessionKey"], handoff
     return key, None
