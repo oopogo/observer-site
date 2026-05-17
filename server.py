@@ -1049,7 +1049,7 @@ def public_history(agent_id: str, mark_read: bool = False, sync: bool = False) -
             return False
         content = str(item.get("content") or "")
         if status == "pending":
-            return True
+            return False
         if "응답 연결이 잠시 끊겨" in content or "응답 대기가 만료" in content:
             return False
         if content.startswith("백그라운드 실행을 시작"):
@@ -1332,10 +1332,11 @@ def is_simple_ping_or_test(message: str, attachments: list[dict[str, Any]] | Non
 
 
 def quick_ping_reply(agent_name: str, message: str, attachments: list[dict[str, Any]] | None = None) -> str | None:
-    if attachments and not is_simple_ping_or_test(message, attachments):
+    if attachments:
         return None
-    if is_simple_ping_or_test(message, attachments):
-        return f"네, 기선님. {agent_name} 응답 가능합니다. 필요한 작업을 바로 지시해 주세요."
+    normalized = normalized_chat_text(str(message or "").strip())
+    if normalized in {"ping", "핑", "test", "테스트"}:
+        return f"{agent_name} 연결은 살아 있습니다."
     return None
 
 
@@ -1547,15 +1548,16 @@ def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
 
 
 def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    validate_chat_message(agent_id, message, attachments)
+    cleaned_message = strip_internal_report_contract(message)
+    validate_chat_message(agent_id, cleaned_message, attachments)
     agent = next(a for a in AGENTS if a["id"] == agent_id)
     session_key, handoff_summary = fast_chat_session_for_send(agent_id)
     request_id = str(uuid.uuid4())
     saved_attachments = save_chat_attachments(agent_id, request_id, attachments)
-    display_message = message.strip() or "이미지 첨부"
+    display_message = cleaned_message.strip() or "이미지 첨부"
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
-    if OBSERVER_WORK_CHAT_DISABLED and agent_id == "observer" and is_work_request_message(message, saved_attachments):
+    if OBSERVER_WORK_CHAT_DISABLED and agent_id == "observer" and is_work_request_message(cleaned_message, saved_attachments):
         append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
         reply = (
             "지금 observer 홈페이지 채팅은 복구 작업 지시 통로로 쓰지 않도록 잠시 막아뒀습니다. "
@@ -1567,19 +1569,19 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
         append_history(agent_id, "assistant", reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "maintenanceGuard": True})
         history_payload = public_history(agent_id, mark_read=False)
         return {"ok": True, "accepted": False, "pending": False, "maintenanceGuard": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
-    outbound_message = build_message_with_attachments(message, saved_attachments)
+    outbound_message = build_message_with_attachments(cleaned_message, saved_attachments)
     if handoff_summary:
         outbound_message = f"{handoff_summary}\n\n[새 요청]\n{outbound_message}"
     append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
     # 게임개발 호출형 에이전트는 '테스트/대답해' 같은 짧은 입력도 실제 에이전트에게
     # 보내서 성격과 역할이 드러나는 답을 받는다. 빈 '듣고 있습니다' 응답은 관제 UX를 해친다.
-    quick_reply = None if agent_id == "lina" else quick_ping_reply(agent["name"], message, saved_attachments)
+    quick_reply = None if agent_id == "lina" else quick_ping_reply(agent["name"], cleaned_message, saved_attachments)
     if quick_reply:
         append_history(agent_id, "assistant", quick_reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "quickAck": True})
         history_payload = public_history(agent_id, mark_read=False)
         return {"ok": True, "accepted": True, "pending": False, "quickAck": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     append_history(agent_id, "system", "전달됨. 응답을 기다리는 중입니다...", {"requestId": request_id, "sessionKey": session_key, "status": "pending", "pending": True})
-    if is_work_request_message(message, saved_attachments):
+    if is_work_request_message(cleaned_message, saved_attachments):
         register_work_item(agent_id, request_id, outbound_message, session_key)
     outbound_for_worker = outbound_message
     worker = threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, outbound_for_worker, request_id), daemon=True)
