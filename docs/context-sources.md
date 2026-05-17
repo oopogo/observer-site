@@ -48,3 +48,22 @@
 - 자동 새 세션 전환은 `session_context_usage_ratio()`만 사용한다.
 - `running/queued/pending` 상태만으로 새 세션 전환하지 않는다.
 - 표시 기준을 바꾸려면 `context_window_info()`만 수정한다.
+
+## 자동 세션 인계
+
+관제 채팅 세션의 context 사용률이 `CONTEXT_ROLLOVER_RATIO` 이상이면 다음 사용자 메시지를 보낼 때 새 세션을 만든다.
+
+- 기준: `session_context_usage_ratio(row) >= 0.95`
+- 위치:
+  - `maybe_rollover_chat_session_from_sessions()`
+  - `fast_chat_session_for_send()`
+- 새 세션 생성 후 `build_observer_handoff_text()`로 인계 패킷을 만든다.
+- 인계 패킷은 다음 사용자 요청 앞에 붙어 새 세션의 첫 실제 요청으로 전달된다.
+- 인계 패킷에는 다음이 들어간다.
+  - 최근 대화 압축
+  - 미완료/실패 작업 상태
+  - 핵심 결정/주의사항 후보
+  - 최근 완료보고 후보
+  - 세션 연속성 규칙
+
+새 세션은 인계 패킷을 포함해 시작하므로 완전한 `0 token` 세션이 아니다. 카드에는 `남은 CTX`와 함께 인계 패킷 기록이 있는 세션이면 `인계포함`을 표시한다.

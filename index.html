@@ -2171,7 +2171,7 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1800';
+      const BUILD_ID = '2026-05-17-1818';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2435,8 +2435,10 @@
         const source = contextSourceLabel(agent.contextSource);
         const session = formatObserverSessionLabel(agent.contextSessionKey);
         const model = agent.contextModel || agent.contextProvider || '';
-        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · ${session}${model ? ` · ${model}` : ''}${advice}`;
-        return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>CHAT CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)} · ${escapeHtml(session)}${advice}</span></div>`;
+        const handoff = agent.contextHandoff;
+        const handoffText = handoff ? ` · 인계 ${formatTokenCount(handoff.handoffChars || 0)} chars 포함` : '';
+        const title = `관제 채팅 컨텍스트 · ${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · 남은 ${left}% · 출처 ${source} · ${session}${handoffText}${model ? ` · ${model}` : ''}${advice}`;
+        return `<div class="context-battery ${cls}" title="${escapeHtml(title)}"><span class="battery-shell" aria-hidden="true"><span class="battery-fill" style="width:${left}%"></span></span><span>남은 CTX ${left}% · ${formatTokenCount(used)}/${formatTokenCount(max)} · ${escapeHtml(source)} · ${escapeHtml(session)}${handoff ? ' · 인계포함' : ''}${advice}</span></div>`;
       }
 
       function renderTags(agent) {

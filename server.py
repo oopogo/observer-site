@@ -92,6 +92,8 @@ COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS = 90
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
+HANDOFF_RECENT_MESSAGE_LIMIT = 18
+HANDOFF_MAX_CHARS = 12000
 SILENCE_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
@@ -907,19 +909,53 @@ def current_observer_chat_row(agent_id: str) -> dict[str, Any] | None:
     return local_session_store_row(agent_id, key)
 
 
-def compact_local_chat_summary(agent_id: str, limit: int = 12) -> str:
+def handoff_item_line(item: dict[str, Any], limit: int = 420) -> str:
+    role = item.get("role") or "message"
+    status = item.get("status") or ""
+    ts = int(item.get("ts") or 0)
+    when = time.strftime("%m-%d %H:%M", time.localtime(ts / 1000)) if ts else "-- --:--"
+    text = strip_internal_report_contract(str(item.get("content") or ""))
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    status_part = f"/{status}" if status else ""
+    return f"- {when} {role}{status_part}: {text}"
+
+
+def compact_local_chat_summary(agent_id: str, limit: int = HANDOFF_RECENT_MESSAGE_LIMIT) -> str:
     rows = public_history(agent_id, mark_read=False).get("messages", [])[-limit:]
-    lines = []
-    for item in rows:
-        role = item.get("role") or "message"
-        text = strip_internal_report_contract(str(item.get("content") or "")).replace("\n", " ").strip()
-        if not text:
-            continue
-        lines.append(f"- {role}: {text[:220]}")
+    lines = [line for item in rows for line in [handoff_item_line(item)] if line]
     return "\n".join(lines[-limit:])
 
 
-def recent_completion_report_for_handoff(agent_id: str, limit: int = 80) -> str:
+def latest_nonterminal_work_items(agent_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    items = load_work_state().get(agent_id, [])
+    if not isinstance(items, list):
+        return []
+    active_statuses = {"working", "reporting", "verifying", "failed"}
+    rows = [item for item in items if isinstance(item, dict) and item.get("status") in active_statuses]
+    rows.sort(key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0), reverse=True)
+    return rows[:limit]
+
+
+def handoff_work_summary(agent_id: str) -> str:
+    rows = latest_nonterminal_work_items(agent_id)
+    if not rows:
+        return "- 현재 미완료/실패 작업 기록 없음"
+    lines = []
+    for item in rows:
+        started = int(item.get("startedAt") or 0)
+        when = time.strftime("%m-%d %H:%M", time.localtime(started / 1000)) if started else "-- --:--"
+        msg = " ".join(str(item.get("message") or "").split())[:360]
+        reason = str(item.get("reason") or "")[:220]
+        tail = f" · 사유: {reason}" if reason else ""
+        lines.append(f"- {when} {item.get('status')}: {msg}{tail}")
+    return "\n".join(lines)
+
+
+def recent_completion_report_for_handoff(agent_id: str, limit: int = 120) -> str:
     rows = public_history(agent_id, mark_read=False).get("messages", [])[-limit:]
     for item in reversed(rows):
         if item.get("role") != "assistant":
@@ -930,15 +966,46 @@ def recent_completion_report_for_handoff(agent_id: str, limit: int = 80) -> str:
         lowered = text.lower()
         completion_markers = ("완료보고", "완료 보고", "완료했습니다", "완료했습니다.", "커밋/push", "커밋/푸시", "검증:", "검증 결과")
         if any(marker in text for marker in completion_markers) or "commit:" in lowered or "push 완료" in text:
-            return text[:1600]
+            return text[:2200]
     return ""
 
 
-def build_observer_handoff_text(agent_id: str, summary: str) -> str:
+def key_decisions_for_handoff(agent_id: str, limit: int = 80) -> str:
+    rows = public_history(agent_id, mark_read=False).get("messages", [])[-limit:]
+    markers = ("결정", "원칙", "주의", "금지", "하지 말", "해야", "기준", "커밋", "푸시", "완료", "실패", "차단")
+    lines = []
+    for item in rows:
+        text = strip_internal_report_contract(str(item.get("content") or ""))
+        compact = " ".join(text.split())
+        if not compact or is_internal_status_text(compact):
+            continue
+        if any(marker in compact for marker in markers):
+            line = handoff_item_line(item, limit=360)
+            if line:
+                lines.append(line)
+    return "\n".join(lines[-10:]) or "- 최근 핵심 결정/주의사항 후보 없음"
+
+
+def build_observer_handoff_text(agent_id: str, summary: str, *, reason: str = "context-auto", old_key: str = "", new_key: str = "") -> str:
     latest_report = recent_completion_report_for_handoff(agent_id)
+    work_summary = handoff_work_summary(agent_id)
+    decisions = key_decisions_for_handoff(agent_id)
+    generated = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime())
     lines = [
-        "[이전 관제 대화 요약]",
-        summary or "요약할 최근 대화가 없습니다.",
+        "[관제 세션 자동 인계 패킷]",
+        f"생성시각: {generated}",
+        f"사유: {reason}",
+        f"이전 세션: {old_key or '-'}",
+        f"새 세션: {new_key or '-'}",
+        "",
+        "[최근 대화 압축]",
+        summary or "- 요약할 최근 대화가 없습니다.",
+        "",
+        "[미완료/실패 작업 상태]",
+        work_summary,
+        "",
+        "[핵심 결정/주의사항 후보]",
+        decisions,
     ]
     if latest_report:
         lines.extend([
@@ -952,10 +1019,12 @@ def build_observer_handoff_text(agent_id: str, summary: str) -> str:
         "이 메시지는 새 세션이 아니라 같은 관제 대화의 이어받기입니다.",
         "이전 요약이나 최근 완료보고 후보에 완료/검증/커밋/차단 내용이 있고 현재 채팅에 보이지 않는다는 지적이 오면, 새 작업을 시작하지 말고 현재 채팅에 완료보고를 즉시 재게시하세요.",
         "'이전 세션에 있습니다'만 말하는 것은 실패입니다. 원인 설명보다 현재 채팅 기준 최종 산출물·검증·실패/차단을 먼저 보고하세요.",
-        "",
-        "위 요약을 참고해 새 관제 세션에서 이어서 답하세요.",
+        "위 인계 패킷을 현재 세션의 작업 기억으로 삼고 이어서 답하세요.",
     ])
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if len(text) > HANDOFF_MAX_CHARS:
+        text = text[:HANDOFF_MAX_CHARS - 200].rstrip() + "\n\n[인계 패킷 길이 제한으로 일부가 잘렸습니다.]"
+    return text
 
 
 def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> dict[str, Any]:
@@ -967,7 +1036,7 @@ def create_new_observer_chat_session(agent_id: str, reason: str = "manual") -> d
     result = gateway_call("sessions.create", {"agentId": agent_id, "key": new_key}, timeout=18)
     set_active_chat_session(agent_id, new_key)
     append_history(agent_id, "system", f"관제 채팅 새 세션 전환: {old_key} → {new_key}", {"status": "session-rollover", "oldSessionKey": old_key, "sessionKey": new_key, "reason": reason})
-    return {"ok": True, "agentId": agent_id, "oldSessionKey": old_key, "sessionKey": new_key, "result": result}
+    return {"ok": True, "agentId": agent_id, "oldSessionKey": old_key, "sessionKey": new_key, "reason": reason, "result": result}
 
 
 def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, str | None]:
@@ -981,7 +1050,8 @@ def maybe_rollover_chat_session_from_sessions(agent_id: str, sessions: list[dict
         return key, None
     summary = compact_local_chat_summary(agent_id)
     result = create_new_observer_chat_session(agent_id, "context-auto")
-    handoff = build_observer_handoff_text(agent_id, summary)
+    handoff = build_observer_handoff_text(agent_id, summary, reason=result.get("reason") or "context-auto", old_key=result.get("oldSessionKey") or "", new_key=result.get("sessionKey") or "")
+    append_history(agent_id, "system", "관제 세션 인계 패킷 생성 완료", {"status": "session-handoff", "hidden": True, "oldSessionKey": result.get("oldSessionKey"), "sessionKey": result.get("sessionKey"), "reason": result.get("reason"), "handoffChars": len(handoff)})
     return result["sessionKey"], handoff
 
 
@@ -1631,7 +1701,8 @@ def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
     if session_context_usage_ratio(row) >= CONTEXT_ROLLOVER_RATIO:
         summary = compact_local_chat_summary(agent_id)
         result = create_new_observer_chat_session(agent_id, "context-auto-local")
-        handoff = build_observer_handoff_text(agent_id, summary)
+        handoff = build_observer_handoff_text(agent_id, summary, reason=result.get("reason") or "context-auto-local", old_key=result.get("oldSessionKey") or "", new_key=result.get("sessionKey") or "")
+        append_history(agent_id, "system", "관제 세션 인계 패킷 생성 완료", {"status": "session-handoff", "hidden": True, "oldSessionKey": result.get("oldSessionKey"), "sessionKey": result.get("sessionKey"), "reason": result.get("reason"), "handoffChars": len(handoff)})
         return result["sessionKey"], handoff
     return key, None
 
@@ -3355,6 +3426,7 @@ def summarize_agents() -> dict[str, Any]:
             "contextPolicy": context_info.get("policy"),
             "contextModel": current_model,
             "contextProvider": current_provider,
+            "contextHandoff": latest_handoff_meta(base["id"], context_info.get("sessionKey")),
             "subagents": subagent_summary,
             "unreadCount": unread_count(base["id"]),
         }
@@ -3382,6 +3454,26 @@ def summarize_agents() -> dict[str, Any]:
             "silenceWarning": sum(1 for a in output if a.get("needsSilenceReport")),
             "warning": sum(1 for a in output if a["state"] == "warning"),
         },
+    }
+
+
+def latest_handoff_meta(agent_id: str, session_key: str | None) -> dict[str, Any] | None:
+    if not session_key:
+        return None
+    latest = None
+    for item in load_history().get(agent_id, []):
+        if item.get("role") != "system" or item.get("status") != "session-handoff":
+            continue
+        if str(item.get("sessionKey") or "") != str(session_key):
+            continue
+        latest = item
+    if not latest:
+        return None
+    return {
+        "ts": int(latest.get("ts") or 0),
+        "reason": latest.get("reason"),
+        "oldSessionKey": latest.get("oldSessionKey"),
+        "handoffChars": latest.get("handoffChars"),
     }
 
 
