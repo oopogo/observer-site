@@ -2197,6 +2197,7 @@
       let officeRenderCount = 0;
       let sending = false;
       let historyPollTimer = null;
+      let historyFastPollTimeout = null;
       let chatRequestSeq = 0;
       let agentsPollTimer = null;
       let agentsLoading = false;
@@ -2204,7 +2205,9 @@
       const AGENTS_REFRESH_ACTIVE_MS = 15000;
       const AGENTS_REFRESH_BACKGROUND_MS = 60000;
       const CHAT_REFRESH_MS = 30000;
-      const BUILD_ID = '2026-05-17-1832';
+      const CHAT_PENDING_REFRESH_MS = 3000;
+      const CHAT_PENDING_REFRESH_WINDOW_MS = 120000;
+      const BUILD_ID = '2026-05-17-2012';
       if (buildNote) buildNote.textContent = `화면 버전: ${BUILD_ID} · 오래된 화면이면 새로고침하세요`;
 
       function escapeHtml(text) {
@@ -2256,7 +2259,7 @@
       }
 
       function visibleMessages(messages) {
-        const hiddenStatuses = new Set(['stale-pending', 'resolved-pending', 'expired', 'recovery-requested', 'abort-requested', 'filtered-rawdump', 'filtered-reasoning', 'internal-status']);
+        const hiddenStatuses = new Set(['delayed-pending', 'stale-pending', 'resolved-pending', 'expired', 'recovery-requested', 'abort-requested', 'filtered-rawdump', 'filtered-reasoning', 'internal-status']);
         return (messages || []).filter((msg) => (isDisplayableHiddenMessage(msg) || !msg.hidden) && !hiddenStatuses.has(msg.status) && (msg.status === 'pending' || !isInternalStatusMessage(msg.content)));
       }
 
@@ -2912,7 +2915,7 @@
             <button class="chat-send" type="submit">보내기</button>
           </form>`;
         multiChatGrid.appendChild(panel);
-        const state = { el: panel, timer: null, sending: false, panelImages: [] };
+        const state = { el: panel, timer: null, fastTimeout: null, sending: false, panelImages: [] };
         openChatPanels.set(agentId, state);
         panel.querySelector('[data-role="close"]').addEventListener('click', () => closeMultiChatPanel(agentId));
         panel.querySelector('[data-role="panel-reports"]').addEventListener('click', () => openReports(agentId));
@@ -2948,6 +2951,15 @@
               body: JSON.stringify({ agentId, message: text, attachments }),
             });
             await refreshPanel(agentId, { forceScroll: true, sync: true });
+            if (state.timer) window.clearInterval(state.timer);
+            state.timer = window.setInterval(() => refreshPanel(agentId), CHAT_PENDING_REFRESH_MS);
+            if (state.fastTimeout) window.clearTimeout(state.fastTimeout);
+            state.fastTimeout = window.setTimeout(() => {
+              const current = openChatPanels.get(agentId);
+              if (!current) return;
+              if (current.timer) window.clearInterval(current.timer);
+              current.timer = window.setInterval(() => refreshPanel(agentId), CHAT_REFRESH_MS);
+            }, CHAT_PENDING_REFRESH_WINDOW_MS);
             await loadAgents();
           } catch (error) {
             renderPanelMessages(panel, [{ role: 'system', content: `전송 실패: ${error}` }], { forceScroll: true });
@@ -2967,6 +2979,7 @@
         const state = openChatPanels.get(agentId);
         if (!state) return;
         if (state.timer) window.clearInterval(state.timer);
+        if (state.fastTimeout) window.clearTimeout(state.fastTimeout);
         state.el.remove();
         openChatPanels.delete(agentId);
         if (openChatPanels.size === 0) {
@@ -3316,6 +3329,22 @@
         }
       }
 
+      function startChatPolling(agentId, requestSeq, intervalMs = CHAT_REFRESH_MS) {
+        if (historyPollTimer) window.clearInterval(historyPollTimer);
+        historyPollTimer = window.setInterval(() => refreshOpenChatHistory(agentId, requestSeq), intervalMs);
+      }
+
+      function armFastChatPolling(agentId = selectedAgent, requestSeq = chatRequestSeq) {
+        if (!agentId) return;
+        startChatPolling(agentId, requestSeq, CHAT_PENDING_REFRESH_MS);
+        if (historyFastPollTimeout) window.clearTimeout(historyFastPollTimeout);
+        historyFastPollTimeout = window.setTimeout(() => {
+          if (requestSeq === chatRequestSeq && selectedAgent === agentId && backdrop.classList.contains('open')) {
+            startChatPolling(agentId, requestSeq, CHAT_REFRESH_MS);
+          }
+        }, CHAT_PENDING_REFRESH_WINDOW_MS);
+      }
+
       async function openChat(card) {
         const nextAgent = card.dataset.agentId || 'observer';
         selectedAgent = nextAgent;
@@ -3323,6 +3352,10 @@
         if (historyPollTimer) {
           window.clearInterval(historyPollTimer);
           historyPollTimer = null;
+        }
+        if (historyFastPollTimeout) {
+          window.clearTimeout(historyFastPollTimeout);
+          historyFastPollTimeout = null;
         }
         const state = card.dataset.state || '상태 확인 중';
         const accent = card.dataset.accent || 'idle';
@@ -3360,7 +3393,7 @@
           }
         }
         if (requestSeq === chatRequestSeq && selectedAgent === nextAgent && backdrop.classList.contains('open')) {
-          historyPollTimer = window.setInterval(() => refreshOpenChatHistory(nextAgent, requestSeq), CHAT_REFRESH_MS);
+          startChatPolling(nextAgent, requestSeq, CHAT_REFRESH_MS);
         }
         setTimeout(() => input.focus(), 50);
       }
@@ -3372,6 +3405,10 @@
         if (historyPollTimer) {
           window.clearInterval(historyPollTimer);
           historyPollTimer = null;
+        }
+        if (historyFastPollTimeout) {
+          window.clearTimeout(historyFastPollTimeout);
+          historyFastPollTimeout = null;
         }
         if (!options.fromHistory && overlayHistoryOpen && window.history) {
           clearOverlayHistoryFlag();
@@ -3777,6 +3814,7 @@
           const payload = await res.json();
           if (!payload.ok) throw new Error(payload.error || '전송 실패');
           await refreshOpenChatHistory(selectedAgent, chatRequestSeq);
+          armFastChatPolling(selectedAgent, chatRequestSeq);
           await loadAgents();
         } catch (error) {
           appendSystemMessage(`전송 실패: ${error}`);
