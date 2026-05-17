@@ -1,0 +1,7 @@
+[Unit]
+Description=Archive finished OpenClaw subagent sessions for observer site
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/c/MegaGrit/OpenClaw/observer-site
+ExecStart=/usr/bin/python3 /mnt/c/MegaGrit/OpenClaw/observer-site/scripts/archive_finished_subagents.py
