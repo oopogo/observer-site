@@ -95,7 +95,6 @@ SILENCE_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_WARNING_MS = 2 * 60 * 1000
 SELF_WORK_REPORT_INTERVAL_MS = 5 * 60 * 1000
 SILENCE_AUTO_NUDGE_ENABLED = False
-OBSERVER_WORK_CHAT_DISABLED = False
 
 
 def cache_get(name: str) -> dict[str, Any] | None:
@@ -1602,18 +1601,6 @@ def send_chat(agent_id: str, message: str, attachments: list[dict[str, Any]] | N
     display_message = cleaned_message.strip() or "이미지 첨부"
     if saved_attachments:
         display_message += "\n" + "\n".join(f"[이미지] {item['path']}" for item in saved_attachments)
-    if OBSERVER_WORK_CHAT_DISABLED and agent_id == "observer" and is_work_request_message(cleaned_message, saved_attachments):
-        append_history(agent_id, "user", display_message, {"requestId": request_id, "sessionKey": session_key, "attachments": saved_attachments})
-        reply = (
-            "지금 observer 홈페이지 채팅은 복구 작업 지시 통로로 쓰지 않도록 잠시 막아뒀습니다. "
-            "최근 장애에서 이 채팅 경로가 gateway sessions.send/대기/대체응답 루프를 만들었기 때문입니다.\n\n"
-            "복구·안정화 지시는 텔레그램의 현재 observer 대화에서 처리하고, "
-            "홈페이지는 상태 확인/기록 열람 용도로만 사용하세요. "
-            "이 메시지는 작업을 시작했다는 뜻이 아니라 안전 차단 안내입니다."
-        )
-        append_history(agent_id, "assistant", reply, {"requestId": request_id, "sessionKey": session_key, "status": "done", "done": True, "pending": False, "maintenanceGuard": True})
-        history_payload = public_history(agent_id, mark_read=False)
-        return {"ok": True, "accepted": False, "pending": False, "maintenanceGuard": True, "requestId": request_id, "agentId": agent_id, "agentName": agent["name"], "sessionKey": session_key, "attachments": saved_attachments, "history": history_payload.get("messages", [])}
     outbound_message = build_message_with_attachments(cleaned_message, saved_attachments)
     if handoff_summary:
         outbound_message = f"{handoff_summary}\n\n[새 요청]\n{outbound_message}"
