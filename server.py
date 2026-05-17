@@ -44,6 +44,7 @@ SESSION_ARCHIVE_DIR = DATA_DIR / "session-archives"
 ACTIVE_CHAT_SESSIONS_PATH = DATA_DIR / "active-chat-sessions.json"
 REPORT_TS_CACHE_PATH = DATA_DIR / "report-ts-cache.json"
 WORK_STATE_PATH = DATA_DIR / "work-state.json"
+EVENTS_PATH = DATA_DIR / "events.jsonl"
 SELF_WORK_STATE_PATH = DATA_DIR / "observer-self-work.json"
 MYLENE_WORK_REPORT_RELAY_PATH = DATA_DIR / "mylene-work-report-relay.json"
 MYLENE_HEARTBEAT_STATE_PATH = Path("/home/oopogo/.openclaw/workspace/memory/heartbeat-state.json")
@@ -106,6 +107,7 @@ CHAT_FORCE_MAX_TOKENS = 120_000
 CHAT_MAX_AGE_MS = 6 * 60 * 60 * 1000
 CHAT_STUCK_STALE_MS = 60 * 1000
 WORK_SESSION_HANDOFF_RATIO = 0.90
+COMPLETION_REPORT_RETRY_SECONDS = 900
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
 HANDOFF_MAX_CHARS = 12000
 SILENCE_WARNING_MS = 15 * 60 * 1000
@@ -535,6 +537,58 @@ def save_work_state(data: dict[str, Any]) -> None:
     invalidate_agents_cache()
 
 
+def load_completion_events(limit: int = 500) -> list[dict[str, Any]]:
+    try:
+        lines = EVENTS_PATH.read_text().splitlines()[-limit:]
+    except Exception:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return events
+
+
+def append_completion_event(event: dict[str, Any]) -> dict[str, Any]:
+    now = int(time.time() * 1000)
+    item = {
+        "id": str(event.get("id") or f"evt-{uuid.uuid4()}"),
+        "ts": int(event.get("ts") or now),
+        "kind": str(event.get("kind") or "session.completed"),
+        **event,
+    }
+    event_key = str(item.get("eventKey") or "")
+    if event_key:
+        for old in load_completion_events(800):
+            if str(old.get("eventKey") or "") == event_key:
+                return old
+    DATA_DIR.mkdir(exist_ok=True)
+    with EVENTS_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    invalidate_agents_cache()
+    return item
+
+
+def emit_work_event(agent_id: str, kind: str, status: str, *, session_key: str = "", request_id: str = "", work_id: str = "", summary: str = "", evidence: dict[str, Any] | None = None, ts: int | None = None) -> dict[str, Any]:
+    event_key = f"{agent_id}|{kind}|{status}|{session_key}|{request_id}|{work_id}"
+    return append_completion_event({
+        "eventKey": event_key,
+        "agentId": agent_id,
+        "sessionKey": session_key,
+        "requestId": request_id,
+        "workId": work_id or request_id,
+        "kind": kind,
+        "status": status,
+        "summary": summary[:500],
+        "evidence": evidence or {},
+        "ts": ts or int(time.time() * 1000),
+    })
+
+
 def load_self_work_state() -> dict[str, Any]:
     try:
         data = json.loads(SELF_WORK_STATE_PATH.read_text())
@@ -642,15 +696,62 @@ def update_work_item(agent_id: str, request_id: str, status: str, *, report: boo
             continue
         item["status"] = status
         item["updatedAt"] = now
+        if status in {"completed", "completed-unreported"} and not item.get("completedAt"):
+            item["completedAt"] = now
         if report:
             item["lastReportAt"] = now
             item["reportedAt"] = now
         if reason:
             item["reason"] = reason[:500]
         changed = True
+        emit_work_event(
+            agent_id,
+            "work.reported" if status == "reported" else ("work.failed" if status == "failed" else "work.updated"),
+            status,
+            session_key=str(item.get("sessionKey") or ""),
+            request_id=request_id,
+            work_id=str(item.get("workId") or request_id),
+            summary=reason or str(item.get("message") or ""),
+        )
         break
     if changed:
         save_work_state(data)
+
+
+def mark_work_completed_unreported(agent_id: str, request_id: str, *, session_key: str = "", reason: str = "") -> None:
+    now = int(time.time() * 1000)
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return
+    changed = False
+    for item in items:
+        if not isinstance(item, dict) or item.get("requestId") != request_id:
+            continue
+        item["status"] = "completed-unreported"
+        item["completedAt"] = int(item.get("completedAt") or now)
+        item["updatedAt"] = now
+        item["reason"] = (reason or "작업 세션은 종료됐지만 사용자-visible 완료보고가 없습니다.")[:500]
+        changed = True
+        emit_work_event(agent_id, "session.completed", "completed-unreported", session_key=session_key or str(item.get("sessionKey") or ""), request_id=request_id, work_id=str(item.get("workId") or request_id), summary=str(item.get("reason") or ""), ts=int(item.get("completedAt") or now))
+        break
+    if changed:
+        save_work_state(data)
+
+
+def mark_completion_report_requested(agent_id: str, request_id: str) -> None:
+    now = int(time.time() * 1000)
+    data = load_work_state()
+    items = data.get(agent_id)
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if isinstance(item, dict) and item.get("requestId") == request_id:
+            item["status"] = "report-recovery-requested"
+            item["reportRecoveryRequestedAt"] = now
+            item["updatedAt"] = now
+            break
+    save_work_state(data)
 
 
 def is_final_work_report_text(text: str) -> bool:
@@ -687,7 +788,7 @@ def close_latest_active_work_from_report(agent_id: str, session_key: str, text: 
     candidates = [
         item for item in items
         if isinstance(item, dict)
-        and item.get("status") in {"working", "reporting", "verifying"}
+        and item.get("status") in {"working", "reporting", "verifying", "completed", "completed-unreported", "report-recovery-requested"}
         and int(item.get("startedAt") or 0) <= report_ts
         and (not session_key or item.get("sessionKey") == session_key)
     ]
@@ -707,11 +808,99 @@ def active_work_item(agent_id: str) -> dict[str, Any] | None:
     items = load_work_state().get(agent_id, [])
     if not isinstance(items, list):
         return None
-    active = [item for item in items if isinstance(item, dict) and item.get("status") in {"working", "reporting", "verifying"}]
+    active = [item for item in items if isinstance(item, dict) and item.get("status") in {"working", "reporting", "verifying", "completed-unreported", "report-recovery-requested"}]
     if not active:
         return None
     active.sort(key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0), reverse=True)
     return active[0]
+
+
+def latest_visible_report_after(agent_id: str, after_ms: int) -> int:
+    latest = 0
+    for item in public_chat_messages(agent_id, limit=None):
+        if item.get("role") != "assistant":
+            continue
+        ts = int(item.get("ts") or 0)
+        if ts <= after_ms:
+            continue
+        text = str(item.get("content") or "")
+        if is_final_work_report_text(text):
+            latest = max(latest, ts)
+    return latest
+
+
+def completed_unreported_work_item(agent_id: str) -> dict[str, Any] | None:
+    items = load_work_state().get(agent_id, [])
+    if not isinstance(items, list):
+        return None
+    candidates = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("status") not in {"completed", "completed-unreported", "report-recovery-requested"}:
+            continue
+        completed_at = int(item.get("completedAt") or item.get("updatedAt") or 0)
+        if completed_at and latest_visible_report_after(agent_id, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000):
+            item["status"] = "reported"
+            item["reportedAt"] = latest_visible_report_after(agent_id, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000)
+            continue
+        candidates.append(item)
+    if candidates:
+        candidates.sort(key=lambda row: int(row.get("completedAt") or row.get("updatedAt") or 0), reverse=True)
+        return candidates[0]
+    return None
+
+
+def scan_completion_events_from_local_sessions(sessions: list[dict[str, Any]]) -> int:
+    """Lightweight fallback: infer completion events from local session snapshots.
+
+    This does not call gateway. It only reconciles observer-site work-state with
+    already-loaded local session rows so completed sessions cannot quietly fall
+    back to 응답 가능 without a visible report.
+    """
+    now = int(time.time() * 1000)
+    by_key = {str(row.get("key") or ""): row for row in sessions if isinstance(row, dict)}
+    data = load_work_state()
+    changed = 0
+    for agent_id, items in data.items():
+        if agent_id not in {a["id"] for a in AGENTS} or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("status") not in {"working", "reporting", "verifying", "completed", "completed-unreported", "report-recovery-requested"}:
+                continue
+            session_key = str(item.get("sessionKey") or "")
+            row = by_key.get(session_key) or local_session_store_row(agent_id, session_key)
+            if not isinstance(row, dict):
+                continue
+            raw_status = str(row.get("status") or "").lower()
+            normalized = normalize_status(raw_status)
+            if normalized == "working":
+                continue
+            completed_at = to_epoch_ms(row.get("updatedAt") or row.get("endedAt") or row.get("startedAt")) or now
+            if raw_status in {"failed", "error", "timeout", "timed_out"}:
+                item["status"] = "failed"
+                item["updatedAt"] = now
+                item["completedAt"] = int(item.get("completedAt") or completed_at)
+                item["reason"] = f"세션 {raw_status}"
+                emit_work_event(agent_id, "session.failed", raw_status, session_key=session_key, request_id=str(item.get("requestId") or ""), work_id=str(item.get("workId") or item.get("requestId") or ""), summary=str(item.get("reason") or ""), ts=completed_at)
+                changed += 1
+                continue
+            if normalized == "idle" and raw_status in {"done", "completed", "success"}:
+                report_after = latest_visible_report_after(agent_id, completed_at - COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS * 1000)
+                if report_after:
+                    item["status"] = "reported"
+                    item["reportedAt"] = report_after
+                    item["lastReportAt"] = report_after
+                    item["updatedAt"] = now
+                    emit_work_event(agent_id, "work.reported", "reported", session_key=session_key, request_id=str(item.get("requestId") or ""), work_id=str(item.get("workId") or item.get("requestId") or ""), summary="완료보고 확인", ts=report_after)
+                else:
+                    item["status"] = "completed-unreported"
+                    item["completedAt"] = int(item.get("completedAt") or completed_at)
+                    item["updatedAt"] = now
+                    item["reason"] = "세션 완료 이벤트 이후 사용자-visible 완료보고 없음"
+                    emit_work_event(agent_id, "session.completed", "completed-unreported", session_key=session_key, request_id=str(item.get("requestId") or ""), work_id=str(item.get("workId") or item.get("requestId") or ""), summary=str(item.get("message") or ""), ts=completed_at)
+                changed += 1
+    if changed:
+        save_work_state(data)
+    return changed
 
 
 def mark_work_nudged(agent_id: str, request_id: str) -> None:
@@ -1801,15 +1990,16 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
                 "",
                 {"status": "pending", "pending": True, "done": False, "sessionKey": session_key, "hidden": True},
             )
-            update_work_item(agent_id, request_id, "reporting", report=True)
+            mark_work_completed_unreported(agent_id, request_id, session_key=session_key, reason="모델 실행은 끝났지만 사용자-visible 완료보고가 비어 있습니다.")
             return
         replace_history_message(
             agent_id,
             request_id,
             "system",
             text,
-            {"status": "done", "done": True, "pending": False, "error": False, "sessionKey": session_key, "role": "assistant"},
+            {"status": "done", "done": True, "pending": False, "error": False, "sessionKey": session_key, "role": "assistant", "hidden": False},
         )
+        emit_work_event(agent_id, "session.completed", "reported", session_key=session_key, request_id=request_id, summary=text)
         if is_progress_only_report_text(text) or not is_final_work_report_text(text):
             update_work_item(agent_id, request_id, "reporting", report=True)
         elif text.startswith("실패:") or "실패했습니다" in text or "중단했습니다" in text or "못했습니다" in text:
@@ -1826,6 +2016,7 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             {"status": "error", "error": True, "done": True, "pending": False, "sessionKey": session_key},
         )
         update_work_item(agent_id, request_id, "failed", report=True, reason=str(exc))
+        emit_work_event(agent_id, "session.failed", "failed", session_key=session_key, request_id=request_id, summary=str(exc))
 
 
 def cached_sessions_if_fresh() -> list[dict[str, Any]]:
@@ -1971,6 +2162,28 @@ def send_silence_nudge(agent_id: str, request_id: str | None = None) -> None:
     complete_chat_async(agent_id, agent["name"], session_key, message, nudge_request_id)
 
 
+def send_completion_report_request(agent_id: str, debt: dict[str, Any]) -> None:
+    agent = next((a for a in AGENTS if a["id"] == agent_id), None)
+    if not agent:
+        return
+    original_request_id = str(debt.get("requestId") or "")
+    session_key = str(debt.get("sessionKey") or "") or observer_chat_session_key(agent_id)
+    request_id = f"completion-report-{original_request_id or str(uuid.uuid4())}"
+    mark_completion_report_requested(agent_id, original_request_id)
+    append_history(agent_id, "system", "시스템: 완료보고 누락 감지 · 완료보고 회수 요청 중", {"status": "pending", "pending": True, "autoNudge": True, "nudgeKind": "completion-report", "sessionKey": session_key, "requestId": request_id, "hidden": True})
+    message = (
+        "[완료보고 누락 회수 요청]\n"
+        "작업 세션이 완료/종료된 것으로 감지됐지만 관제 채팅에 사용자-visible 완료보고가 없습니다. "
+        "새 작업을 시작하지 말고, 이 작업의 최종 완료보고만 자연어로 작성하세요.\n"
+        f"- 원 요청 ID: {original_request_id or '-'}\n"
+        f"- 세션: {session_key}\n"
+        f"- 감지 사유: {debt.get('reason') or debt.get('summary') or '완료 이벤트 후 보고 없음'}\n"
+        "보고에는 완료/아직/막힘을 먼저 쓰고, 산출물, 검증 결과, 커밋/푸시 여부, 남은 작업 또는 차단 사유를 포함하세요. "
+        "이 메시지에는 내부 JSON/status가 아니라 사용자에게 보이는 완료보고로만 응답하세요."
+    )
+    threading.Thread(target=complete_chat_async, args=(agent_id, agent["name"], session_key, message, request_id), daemon=True).start()
+
+
 def send_force_check(agent_id: str) -> dict[str, Any]:
     agent = next((a for a in AGENTS if a["id"] == agent_id), None)
     if not agent:
@@ -2015,6 +2228,15 @@ def maybe_auto_nudge(agent: dict[str, Any]) -> None:
             nudges[key] = now
             save_nudges(nudges)
             append_history(agent_id, "system", f"시스템: 후타바 직접 작업 보고 기한 초과 · {task} · 중간/완료 보고 필요", {"status": "self-work-report-due", "sessionKey": observer_chat_session_key(agent_id), "requestId": request_id})
+    report_debt = agent.get("reportDebt") if isinstance(agent.get("reportDebt"), dict) else None
+    if report_debt and report_debt.get("kind") in {"completed-unreported", "completion-event"}:
+        request_id = str(report_debt.get("requestId") or report_debt.get("workId") or "")
+        key = f"completion-report:{agent_id}:{request_id or report_debt.get('sessionKey') or 'unknown'}"
+        last = int(nudges.get(key, 0) or 0)
+        if now - last >= COMPLETION_REPORT_RETRY_SECONDS:
+            nudges[key] = now
+            save_nudges(nudges)
+            send_completion_report_request(agent_id, report_debt)
     if agent.get("needsSilenceReport"):
         if not SILENCE_AUTO_NUDGE_ENABLED:
             return
@@ -2814,6 +3036,18 @@ def latest_session_assistant_report_ts(agent_id: str, sessions: list[dict[str, A
 
 
 def latest_report_debt(agent_id: str, sessions: list[dict[str, Any]], chat_key: str | None = None) -> dict[str, Any] | None:
+    completed_unreported = completed_unreported_work_item(agent_id)
+    if completed_unreported:
+        ts = int(completed_unreported.get("completedAt") or completed_unreported.get("updatedAt") or completed_unreported.get("startedAt") or 0)
+        return {
+            "kind": "completed-unreported",
+            "ts": ts,
+            "reason": completed_unreported.get("reason") or "작업 완료 후 사용자-visible 완료보고 없음",
+            "requestId": completed_unreported.get("requestId"),
+            "workId": completed_unreported.get("workId") or completed_unreported.get("requestId"),
+            "sessionKey": completed_unreported.get("sessionKey"),
+            "lastReportTs": latest_visible_agent_report_ts(agent_id, sessions, chat_key),
+        }
     active = active_work_item(agent_id)
     if not active:
         return None
@@ -3481,6 +3715,7 @@ def summarize_agents() -> dict[str, Any]:
     expire_stale_pending_assignments(now)
     expire_stale_work_items(now)
     sessions = get_sessions_cached(timeout=18)
+    scan_completion_events_from_local_sessions(sessions)
 
     output = []
     for raw_base in AGENTS:
@@ -3570,9 +3805,9 @@ def summarize_agents() -> dict[str, Any]:
         report_debt = latest_report_debt(base["id"], agent_sessions, chat_key)
         if report_debt and state == "idle":
             state = "reporting"
-            status_text = "보고 누락"
+            status_text = "완료 후 보고 누락" if report_debt.get("kind") == "completed-unreported" else "보고 누락"
             debt_age_s = max(0, (now - int(report_debt.get("ts") or now)) // 1000)
-            detail = f"보고 누락 · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
+            detail = f"{status_text} · {report_debt.get('reason') or '작업 증거'} · {debt_age_s:,}초 전"
         active_work = active_work_item(base["id"])
         self_work = active_self_work_item() if base["id"] == "observer" else None
         self_work_age_ms = 0
@@ -4056,6 +4291,12 @@ class Handler(SimpleHTTPRequestHandler):
             agent_id = (qs.get("agentId") or ["main"])[0]
             self.json_response(agent_completion_reports(agent_id))
             return
+        if path == "/api/events":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            limit = safe_positive_int((qs.get("limit") or ["100"])[0]) or 100
+            self.json_response({"ok": True, "events": load_completion_events(min(limit, 1000))})
+            return
         if path == "/api/mylene/completion-reports":
             self.json_response(mylene_completion_reports())
             return
@@ -4100,6 +4341,12 @@ class Handler(SimpleHTTPRequestHandler):
                 message = str(data.get("message") or "")
                 result = send_chat(agent_id, message, data.get("attachments") if isinstance(data.get("attachments"), list) else None)
                 self.json_response(result, 200 if result.get("ok") else 504)
+                return
+            if path == "/api/events":
+                if agent_id not in {a["id"] for a in AGENTS}:
+                    raise ValueError("허용되지 않은 에이전트입니다.")
+                event = append_completion_event({**data, "agentId": agent_id})
+                self.json_response({"ok": True, "event": event})
                 return
             if path == "/api/agent/recover":
                 result = send_recovery_nudge(agent_id)
