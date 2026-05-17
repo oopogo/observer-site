@@ -3688,6 +3688,8 @@
       agentTabButton.addEventListener('click', () => switchMainView('agent'));
       officeTabButton.addEventListener('click', () => switchMainView('office'));
       chatTabButton.addEventListener('click', () => switchMainView('chat'));
+      cronTabButton.addEventListener('click', () => switchMainView('cron'));
+      if (cronRefreshButton) cronRefreshButton.addEventListener('click', loadCronJobs);
 
       document.addEventListener('visibilitychange', () => {
         if (agentsPollTimer) window.clearTimeout(agentsPollTimer);
