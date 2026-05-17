@@ -270,7 +270,7 @@ def is_public_chat_visible(item: dict[str, Any]) -> bool:
     if item.get("hidden"):
         return False
     status = item.get("status")
-    if status in {"pending", "stale-pending", "expired"}:
+    if status in {"pending", "delayed-pending", "stale-pending", "expired"}:
         return False
     if item.get("role") == "assistant" and status == "synced" and not item.get("visibleSync"):
         return False
@@ -1258,6 +1258,7 @@ def sync_latest_session_file_report(agent_id: str) -> int:
     entries = history.setdefault(agent_id, [])
     latest_user_ts = max((int(item.get("ts") or 0) for item in entries if item.get("role") == "user"), default=0)
     existing = {(item.get("role"), item.get("content")) for item in entries}
+    candidates: list[dict[str, Any]] = []
     appended = 0
     try:
         with path.open("rb") as handle:
@@ -1281,13 +1282,26 @@ def sync_latest_session_file_report(agent_id: str) -> int:
         text = extract_content_text(message.get("content"))
         if not text or is_internal_status_text(text) or text == "NO_REPLY":
             continue
-        key = ("assistant", text)
-        if key in existing:
-            continue
-        entries.append({"role": "assistant", "content": text, "ts": ts or int(time.time() * 1000), "status": "synced", "visibleSync": True, "sessionKey": session_key})
-        existing.add(key)
-        appended += 1
-        close_latest_active_work_from_report(agent_id, session_key, text, ts or None)
+        candidates.append({"role": "assistant", "content": text, "ts": ts or int(time.time() * 1000), "status": "synced", "visibleSync": True, "sessionKey": session_key})
+    if candidates:
+        # Session files can contain compacted/replayed older assistant messages
+        # after the latest user turn. For observer-site recovery, append only
+        # the newest visible assistant answer; otherwise the chat gains a burst
+        # of stale duplicate bubbles and unread counts drift.
+        item = max(candidates, key=lambda row: int(row.get("ts") or 0))
+        key = ("assistant", item.get("content"))
+        if key not in existing:
+            entries.append(item)
+            existing.add(key)
+            appended = 1
+            latest_synced_ts = int(item.get("ts") or int(time.time() * 1000))
+            for pending in entries:
+                if pending.get("role") == "system" and pending.get("status") in {"pending", "delayed-pending", "fallback"} and int(pending.get("ts") or 0) <= latest_synced_ts:
+                    pending["hidden"] = True
+                    pending["status"] = "done"
+                    pending["done"] = True
+                    pending.pop("pending", None)
+            close_latest_active_work_from_report(agent_id, session_key, str(item.get("content") or ""), latest_synced_ts)
     if appended:
         del entries[:-80]
         save_history(history)
@@ -2116,6 +2130,20 @@ def gateway_call(method: str, params: dict[str, Any] | None = None, timeout: int
 
 
 def to_epoch_ms(value: Any) -> int:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        try:
+            num = float(text)
+            return int(num * 1000 if num < 1_000_000_000_000 else num) if num > 0 else 0
+        except Exception:
+            pass
+        try:
+            from datetime import datetime
+            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+        except Exception:
+            return 0
     try:
         num = float(value)
     except Exception:
@@ -3415,6 +3443,9 @@ def summarize_agents() -> dict[str, Any]:
         local_chat_session = local_session_store_row(base["id"], chat_key)
         context_source = chat_session or local_chat_session or current
 
+        pending_before_sync = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
+        if pending_before_sync and local_chat_session and normalize_status(str(local_chat_session.get("status") or "")) == "idle":
+            sync_latest_session_file_report(base["id"])
         report_pending_ms = latest_report_pending_ms(base["id"])
         pending_assignment_ms = latest_pending_assignment_ms(base["id"], now) or latest_unanswered_user_ms(base["id"])
         state = "working" if recent_active else ("reporting" if report_pending_ms else ("assigned" if pending_assignment_ms else "idle"))
