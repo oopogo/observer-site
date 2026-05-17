@@ -100,6 +100,9 @@ COMPLETED_REPORT_SKEW_TOLERANCE_SECONDS = 90
 ORPHAN_RUNNING_CANDIDATE_MS = 6 * 60 * 60 * 1000
 ARCHIVE_CANDIDATE_MS = 3 * 60 * 60 * 1000
 CONTEXT_ROLLOVER_RATIO = 0.95
+CALL_ONLY_CHAT_MAX_TOKENS = 80_000
+CALL_ONLY_CHAT_MAX_AGE_MS = 6 * 60 * 60 * 1000
+CHAT_STUCK_STALE_MS = 60 * 1000
 HANDOFF_RECENT_MESSAGE_LIMIT = 18
 HANDOFF_MAX_CHARS = 12000
 SILENCE_WARNING_MS = 15 * 60 * 1000
@@ -1015,7 +1018,20 @@ def session_is_busy_for_chat(row: dict[str, Any] | None) -> bool:
     # Do not send a new operator chat turn into a session that is already
     # running. That race is what produced repeated "final response empty"
     # bridge fallbacks while the agent was still doing tool work.
-    return status in {"running", "queued", "pending"}
+    return status in {"running", "processing", "queued", "pending"}
+
+
+def session_stale_ms(row: dict[str, Any] | None, now_ms: int | None = None) -> int:
+    if not isinstance(row, dict):
+        return 0
+    now_ms = now_ms or int(time.time() * 1000)
+    updated = to_epoch_ms(row.get("updatedAt") or row.get("startedAt"))
+    return max(0, now_ms - updated) if updated else 0
+
+
+def agent_base(agent_id: str) -> dict[str, Any] | None:
+    raw = next((item for item in AGENTS if item.get("id") == agent_id), None)
+    return apply_agent_settings(raw) if raw else None
 
 
 def current_observer_chat_row_from_sessions(agent_id: str, sessions: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
@@ -1799,21 +1815,49 @@ def cached_sessions_if_fresh() -> list[dict[str, Any]]:
     return sessions if isinstance(sessions, list) else []
 
 
+def rollover_chat_session_with_handoff(agent_id: str, reason: str) -> tuple[str, str]:
+    summary = compact_local_chat_summary(agent_id)
+    result = create_new_observer_chat_session(agent_id, reason)
+    handoff = build_observer_handoff_text(agent_id, summary, reason=result.get("reason") or reason, old_key=result.get("oldSessionKey") or "", new_key=result.get("sessionKey") or "")
+    append_history(agent_id, "system", "관제 세션 인계 패킷 생성 완료", {"status": "session-handoff", "hidden": True, "oldSessionKey": result.get("oldSessionKey"), "sessionKey": result.get("sessionKey"), "reason": result.get("reason"), "handoffChars": len(handoff)})
+    return result["sessionKey"], handoff
+
+
+def chat_session_should_rollover_for_speed(agent_id: str, row: dict[str, Any] | None) -> tuple[bool, str]:
+    base = agent_base(agent_id)
+    if not base or not is_call_only_agent(base) or not isinstance(row, dict):
+        return False, ""
+    now_ms = int(time.time() * 1000)
+    status = str(row.get("status") or "").lower()
+    stale_ms = session_stale_ms(row, now_ms)
+    if session_is_busy_for_chat(row) and stale_ms >= CHAT_STUCK_STALE_MS:
+        return True, "call-only-stuck-session"
+    if int(row.get("totalTokens") or 0) >= CALL_ONLY_CHAT_MAX_TOKENS:
+        return True, "call-only-large-session"
+    started = to_epoch_ms(row.get("startedAt"))
+    if started and now_ms - started >= CALL_ONLY_CHAT_MAX_AGE_MS:
+        return True, "call-only-aged-session"
+    return False, ""
+
+
 def fast_chat_session_for_send(agent_id: str) -> tuple[str, str | None]:
     # 채팅 UI 응답성을 위해 전송 요청 경로에서는 매번 gateway 조회를 하지 않는다.
     # 대신 신선한 세션 캐시가 있으면 그걸 쓰고, 없더라도 로컬 세션 저장소의 최근
-    # 토큰 사용량은 확인해서 컨텍스트 포화 직전 세션을 계속 쓰는 일은 막는다.
+    # 토큰 사용량은 확인해서 컨텍스트 포화 직전/호출형 stale 세션을 계속 쓰는 일은 막는다.
     sessions = cached_sessions_if_fresh()
     if sessions:
+        key, row = current_observer_chat_row_from_sessions(agent_id, sessions)
+        should, reason = chat_session_should_rollover_for_speed(agent_id, row)
+        if should:
+            return rollover_chat_session_with_handoff(agent_id, reason)
         return maybe_rollover_chat_session_from_sessions(agent_id, sessions)
     key = desired_observer_chat_session_key(agent_id)
     row = local_session_store_row(agent_id, key)
+    should, reason = chat_session_should_rollover_for_speed(agent_id, row)
+    if should:
+        return rollover_chat_session_with_handoff(agent_id, reason)
     if session_context_usage_ratio(row, agent_id) >= CONTEXT_ROLLOVER_RATIO:
-        summary = compact_local_chat_summary(agent_id)
-        result = create_new_observer_chat_session(agent_id, "context-auto-local")
-        handoff = build_observer_handoff_text(agent_id, summary, reason=result.get("reason") or "context-auto-local", old_key=result.get("oldSessionKey") or "", new_key=result.get("sessionKey") or "")
-        append_history(agent_id, "system", "관제 세션 인계 패킷 생성 완료", {"status": "session-handoff", "hidden": True, "oldSessionKey": result.get("oldSessionKey"), "sessionKey": result.get("sessionKey"), "reason": result.get("reason"), "handoffChars": len(handoff)})
-        return result["sessionKey"], handoff
+        return rollover_chat_session_with_handoff(agent_id, "context-auto-local")
     return key, None
 
 
