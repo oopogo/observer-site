@@ -1958,6 +1958,7 @@
         <div class="gateway-health-card" id="gatewayCallsCard"><div class="gateway-health-label">Gateway Call</div><div class="gateway-health-value" id="gatewayCalls">-</div></div>
         <div class="gateway-health-card" id="gatewayHealthCard"><div class="gateway-health-label">부하 경고</div><div class="gateway-health-value" id="gatewayHealth">-</div></div>
         <div class="gateway-health-card"><div class="gateway-health-label">원인분석</div><div class="gateway-health-value">이벤트</div><button class="recover-button compact gateway-events-button" type="button" id="gatewayEventsButton">재실행/끊김 기록</button></div>
+        <div class="gateway-health-card"><div class="gateway-health-label">메모리 분석</div><div class="gateway-health-value">Heap</div><button class="recover-button compact gateway-events-button" type="button" id="gatewayMemoryButton">메모리 상세</button></div>
       </section>
 
       <section class="summary" id="statusSummary" aria-label="상태별 요약">
@@ -2148,6 +2149,25 @@
         </section>
       </div>
 
+      <div class="chat-backdrop" id="gatewayMemoryBackdrop" aria-hidden="true">
+        <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="gatewayMemoryTitle">
+          <div class="chat-head">
+            <div class="chat-agent">
+              <div class="mini-orb">MEM</div>
+              <div>
+                <div class="chat-title" id="gatewayMemoryTitle">게이트웨이 메모리 상세</div>
+                <div class="chat-subtitle">Gateway stability 진단의 process.memoryUsage()와 /proc rollup을 가볍게 확인합니다.</div>
+              </div>
+            </div>
+            <div class="chat-head-actions">
+              <button class="recover-button compact" type="button" id="gatewayMemoryRefresh">새로고침</button>
+              <button class="chat-close" type="button" id="gatewayMemoryClose" aria-label="게이트웨이 메모리 닫기">×</button>
+            </div>
+          </div>
+          <div class="chat-body"><div class="gateway-event-list" id="gatewayMemoryList"><div class="message system">메모리 상세를 불러오는 중입니다.</div></div></div>
+        </section>
+      </div>
+
 
     </main>
 
@@ -2177,6 +2197,11 @@
       const gatewayMemory = document.getElementById('gatewayMemory');
       const gatewayCalls = document.getElementById('gatewayCalls');
       const gatewayHealth = document.getElementById('gatewayHealth');
+      const gatewayMemoryButton = document.getElementById('gatewayMemoryButton');
+      const gatewayMemoryBackdrop = document.getElementById('gatewayMemoryBackdrop');
+      const gatewayMemoryClose = document.getElementById('gatewayMemoryClose');
+      const gatewayMemoryRefresh = document.getElementById('gatewayMemoryRefresh');
+      const gatewayMemoryList = document.getElementById('gatewayMemoryList');
       const countIdle = document.getElementById('countIdle');
       const countAssigned = document.getElementById('countAssigned');
       const countReporting = document.getElementById('countReporting');
@@ -3353,6 +3378,62 @@
         gatewayEventsBackdrop.setAttribute('aria-hidden', 'true');
       }
 
+      function memoryValue(value) {
+        return typeof value === 'number' ? `${value.toFixed(value >= 100 ? 0 : 1)}MB` : '-';
+      }
+
+      function renderGatewayMemory(payload) {
+        if (!gatewayMemoryList) return;
+        const latest = payload?.latest || {};
+        const samples = Array.isArray(payload?.samples) ? payload.samples.slice().reverse() : [];
+        const rollup = payload?.rollup || {};
+        const pressures = Array.isArray(payload?.pressures) ? payload.pressures.slice().reverse() : [];
+        const latestHtml = payload?.latest ? `
+          <article class="gateway-event-card ${latest.heapUsedMb >= 1024 ? 'error' : 'info'}">
+            <div class="gateway-event-head"><span>현재 진단 샘플</span><span class="gateway-event-time">${escapeHtml(gatewayEventTime(latest.ts))}</span></div>
+            <div class="gateway-event-reason">${escapeHtml(payload.conclusion || '')}</div>
+            <div class="gateway-event-raw">RSS ${memoryValue(latest.rssMb)} · heapUsed ${memoryValue(latest.heapUsedMb)} · heapTotal ${memoryValue(latest.heapTotalMb)} · external ${memoryValue(latest.externalMb)} · arrayBuffers ${memoryValue(latest.arrayBuffersMb)}</div>
+            <div class="gateway-event-time">PID ${escapeHtml(payload.pid || '-')} · /proc RSS ${memoryValue(payload.health?.rssMb)} · anon ${(Number(rollup.anonymousKb || 0) / 1024).toFixed(0)}MB · privateDirty ${(Number(rollup.private_DirtyKb || 0) / 1024).toFixed(0)}MB</div>
+          </article>` : `<div class="message system">진단 메모리 샘플이 없습니다. ${escapeHtml(payload?.error || '')}</div>`;
+        const pressureHtml = pressures.length ? pressures.map((item) => `
+          <article class="gateway-event-card warn">
+            <div class="gateway-event-head"><span>메모리 압박 · ${escapeHtml(item.reason || '-')}</span><span class="gateway-event-time">${escapeHtml(gatewayEventTime(item.ts))}</span></div>
+            <div class="gateway-event-raw">RSS ${memoryValue(item.rssMb)} · heapUsed ${memoryValue(item.heapUsedMb)} · external ${memoryValue(item.externalMb)}</div>
+          </article>`).join('') : '';
+        const trendHtml = samples.length ? samples.map((item) => `
+          <article class="gateway-event-card">
+            <div class="gateway-event-head"><span>샘플 #${escapeHtml(item.seq || '-')}</span><span class="gateway-event-time">${escapeHtml(gatewayEventTime(item.ts))}</span></div>
+            <div class="gateway-event-raw">RSS ${memoryValue(item.rssMb)} · heapUsed ${memoryValue(item.heapUsedMb)} · heapTotal ${memoryValue(item.heapTotalMb)} · external ${memoryValue(item.externalMb)} · arrayBuffers ${memoryValue(item.arrayBuffersMb)}</div>
+          </article>`).join('') : '';
+        gatewayMemoryList.innerHTML = latestHtml + pressureHtml + trendHtml;
+      }
+
+      async function loadGatewayMemory() {
+        if (!gatewayMemoryList) return;
+        gatewayMemoryList.innerHTML = '<div class="message system">게이트웨이 메모리 상세를 불러오는 중입니다.</div>';
+        try {
+          const res = await fetch('/api/gateway-memory?limit=120', { cache: 'no-store' });
+          const payload = await readJsonResponse(res, '게이트웨이 메모리');
+          renderGatewayMemory(payload);
+        } catch (error) {
+          gatewayMemoryList.innerHTML = `<div class="message system">게이트웨이 메모리 조회 실패: ${escapeHtml(String(error))}</div>`;
+        }
+      }
+
+      function openGatewayMemory() {
+        if (!gatewayMemoryBackdrop) return;
+        gatewayMemoryBackdrop.classList.add('open');
+        gatewayMemoryBackdrop.setAttribute('aria-hidden', 'false');
+        loadGatewayMemory();
+      }
+
+      function closeGatewayMemory() {
+        if (!gatewayMemoryBackdrop) return;
+        gatewayMemoryBackdrop.classList.remove('open');
+        gatewayMemoryBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
+
       async function loadGatewayStatus() {
         try {
           const res = await fetch('/api/gateway-status', { cache: 'no-store' });
@@ -3385,6 +3466,12 @@
       gatewayEventsRefresh?.addEventListener('click', loadGatewayEvents);
       gatewayEventsBackdrop?.addEventListener('click', (event) => {
         if (event.target === gatewayEventsBackdrop) closeGatewayEvents();
+      });
+      gatewayMemoryButton?.addEventListener('click', openGatewayMemory);
+      gatewayMemoryClose?.addEventListener('click', closeGatewayMemory);
+      gatewayMemoryRefresh?.addEventListener('click', loadGatewayMemory);
+      gatewayMemoryBackdrop?.addEventListener('click', (event) => {
+        if (event.target === gatewayMemoryBackdrop) closeGatewayMemory();
       });
 
       document.addEventListener('click', (event) => {

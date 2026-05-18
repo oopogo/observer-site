@@ -2908,6 +2908,113 @@ def summarize_gateway_status() -> dict[str, Any]:
 
 
 
+def bytes_to_mb(value: Any) -> float | None:
+    try:
+        return round(float(value) / 1024 / 1024, 1)
+    except Exception:
+        return None
+
+
+def proc_memory_rollup(pid: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"pid": pid}
+    if pid <= 0:
+        return result
+    try:
+        for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines():
+            if not line or ":" not in line:
+                continue
+            key, raw = line.split(":", 1)
+            value = raw.strip().split()[0] if raw.strip() else ""
+            if key in {"Rss", "Pss", "Private_Dirty", "Private_Clean", "Anonymous", "Shared_Clean", "Swap"}:
+                result[f"{key[0].lower()}{key[1:]}Kb"] = safe_positive_int(value) or 0
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def latest_gateway_memory_events(limit: int = 120) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    try:
+        proc = subprocess.run(
+            [OPENCLAW_BIN, "gateway", "stability", "--json", "--limit", str(max(20, min(limit, 300)))],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return [], [], (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+        payload = json.loads(proc.stdout or "{}")
+        samples: list[dict[str, Any]] = []
+        pressures: list[dict[str, Any]] = []
+        for event in payload.get("events", []):
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") not in {"diagnostic.memory.sample", "diagnostic.memory.pressure"}:
+                continue
+            memory = event.get("memory") if isinstance(event.get("memory"), dict) else {}
+            item = {
+                "seq": event.get("seq"),
+                "ts": event.get("ts"),
+                "type": event.get("type"),
+                "level": event.get("level"),
+                "reason": event.get("reason"),
+                "rssMb": bytes_to_mb(memory.get("rssBytes")),
+                "heapUsedMb": bytes_to_mb(memory.get("heapUsedBytes")),
+                "heapTotalMb": bytes_to_mb(memory.get("heapTotalBytes")),
+                "externalMb": bytes_to_mb(memory.get("externalBytes")),
+                "arrayBuffersMb": bytes_to_mb(memory.get("arrayBuffersBytes")),
+            }
+            if event.get("type") == "diagnostic.memory.sample":
+                samples.append(item)
+            else:
+                pressures.append(item)
+        return samples, pressures, None
+    except Exception as exc:
+        return [], [], str(exc)
+
+
+def collect_gateway_memory(limit: int = 120) -> dict[str, Any]:
+    generated = int(time.time() * 1000)
+    pid = 0
+    try:
+        show = subprocess.run(
+            ["systemctl", "--user", "show", "openclaw-gateway.service", "-p", "MainPID"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        fields = dict(line.split("=", 1) for line in show.stdout.splitlines() if "=" in line)
+        pid = int(fields.get("MainPID", "0") or 0)
+    except Exception:
+        pid = 0
+    health = gateway_process_health(pid)
+    rollup = proc_memory_rollup(pid)
+    samples, pressures, error = latest_gateway_memory_events(limit)
+    latest = samples[-1] if samples else None
+    conclusion = "진단 샘플 없음"
+    if latest:
+        heap = float(latest.get("heapUsedMb") or 0)
+        rss = float(latest.get("rssMb") or 0)
+        ext = float(latest.get("externalMb") or 0) + float(latest.get("arrayBuffersMb") or 0)
+        if rss and heap / rss >= 0.65:
+            conclusion = "V8 heap 비중이 큼: 세션/메시지/진단 상태 같은 JS 객체 누적 가능성이 높습니다."
+        elif rss and ext / rss >= 0.25:
+            conclusion = "external/ArrayBuffer 비중이 큼: 버퍼/네이티브 메모리 누적 가능성이 높습니다."
+        else:
+            conclusion = "RSS는 높지만 heap/external 단일 원인은 약함: 추가 heap snapshot 전 추이 관찰 권장."
+    return {
+        "ok": error is None or bool(samples),
+        "generatedAt": generated,
+        "pid": pid,
+        "health": health,
+        "rollup": rollup,
+        "latest": latest,
+        "samples": samples[-20:],
+        "pressures": pressures[-20:],
+        "conclusion": conclusion,
+        "error": error,
+    }
+
+
 def gateway_event_timestamp_ms(line: str) -> int:
     try:
         data = json.loads(line)
@@ -4717,6 +4824,13 @@ class Handler(SimpleHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             limit = safe_positive_int((qs.get("limit") or ["120"])[0]) or 120
             payload = collect_gateway_events(min(limit, 300))
+            self.json_response(payload, 200 if payload.get("ok") else 500)
+            return
+        if path == "/api/gateway-memory":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            limit = safe_positive_int((qs.get("limit") or ["120"])[0]) or 120
+            payload = collect_gateway_memory(min(limit, 300))
             self.json_response(payload, 200 if payload.get("ok") else 500)
             return
         if path == "/api/gateway-status":
