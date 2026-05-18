@@ -303,15 +303,60 @@ def is_public_chat_visible(item: dict[str, Any]) -> bool:
     return not is_internal_status_text(content)
 
 
+def normalize_chat_content_for_dedupe(content: str) -> str:
+    return " ".join(strip_internal_report_contract(str(content or "")).split())
+
+
+def is_terminal_chat_response(item: dict[str, Any]) -> bool:
+    role = item.get("role")
+    status = item.get("status")
+    if role not in {"assistant", "system"}:
+        return False
+    if status in {"pending", "delayed-pending", "stale-pending", "expired"}:
+        return False
+    return bool(normalize_chat_content_for_dedupe(str(item.get("content") or "")))
+
+
+def latest_user_index(entries: list[dict[str, Any]]) -> int:
+    for index in range(len(entries) - 1, -1, -1):
+        item = entries[index]
+        if isinstance(item, dict) and item.get("role") == "user":
+            return index
+    return -1
+
+
+def duplicate_terminal_response_index(entries: list[dict[str, Any]], content: str, *, exclude_index: int | None = None) -> int | None:
+    normalized = normalize_chat_content_for_dedupe(content)
+    if not normalized:
+        return None
+    start = latest_user_index(entries) + 1
+    for index, item in enumerate(entries[start:], start=start):
+        if exclude_index is not None and index == exclude_index:
+            continue
+        if not isinstance(item, dict) or not is_terminal_chat_response(item):
+            continue
+        if normalize_chat_content_for_dedupe(str(item.get("content") or "")) == normalized:
+            return index
+    return None
+
+
 def public_chat_messages(agent_id: str, limit: int | None = 80) -> list[dict[str, Any]]:
     entries = load_history().get(agent_id, [])
     source = entries[-limit:] if limit else entries
     visible: list[dict[str, Any]] = []
     seen_content_by_base_request: dict[str, set[str]] = {}
+    seen_response_content_this_turn: set[str] = set()
     for item in source:
         if not isinstance(item, dict) or not is_public_chat_visible(item):
             continue
         content = strip_internal_report_contract(str(item.get("content") or ""))
+        if item.get("role") == "user":
+            seen_response_content_this_turn.clear()
+        elif item.get("role") in {"assistant", "system"}:
+            normalized_visible = normalize_chat_content_for_dedupe(content)
+            if normalized_visible in seen_response_content_this_turn:
+                continue
+            seen_response_content_this_turn.add(normalized_visible)
         request_id = str(item.get("requestId") or "")
         base_request_id = request_id.removeprefix("silence-")
         normalized_content = " ".join(content.split())
@@ -1093,6 +1138,14 @@ def append_history(agent_id: str, role: str, content: str, meta: dict[str, Any] 
     history = load_history()
     item = {"role": role, "content": content, "ts": int(time.time() * 1000), **(meta or {})}
     entries = history.setdefault(agent_id, [])
+    if is_terminal_chat_response(item):
+        duplicate_index = duplicate_terminal_response_index(entries, content)
+        if duplicate_index is not None:
+            existing = entries[duplicate_index]
+            existing.update({k: v for k, v in item.items() if k not in {"role", "content", "ts"}})
+            save_history(history)
+            invalidate_agents_cache()
+            return existing
     entries.append(item)
     del entries[:-80]
     save_history(history)
@@ -1107,6 +1160,21 @@ def replace_history_message(agent_id: str, request_id: str, role: str, content: 
     for index, item in enumerate(entries):
         if item.get("requestId") == request_id and item.get("role") == role:
             updated = {**item, "content": content, "ts": int(time.time() * 1000), **(meta or {})}
+            if is_terminal_chat_response(updated):
+                duplicate_index = duplicate_terminal_response_index(entries, content, exclude_index=index)
+                if duplicate_index is not None:
+                    entries[index] = {
+                        **item,
+                        "content": "중복 응답 숨김",
+                        "ts": int(time.time() * 1000),
+                        "status": "resolved-pending",
+                        "done": True,
+                        "hidden": True,
+                        "duplicateOfTs": entries[duplicate_index].get("ts"),
+                    }
+                    save_history(history)
+                    invalidate_agents_cache()
+                    return entries[duplicate_index]
             entries[index] = updated
             save_history(history)
             invalidate_agents_cache()
@@ -1572,7 +1640,7 @@ def sync_gateway_session_history(agent_id: str) -> None:
         if not text:
             continue
         key = ("assistant", text)
-        if key in existing:
+        if key in existing or duplicate_terminal_response_index(entries, text) is not None:
             continue
         ts = to_epoch_ms(message.get("timestamp") or message.get("ts") or message.get("createdAt")) or int(time.time() * 1000)
         entries.append({"role": "assistant", "content": text, "ts": ts, "status": "synced", "sessionKey": session_key})
@@ -1639,7 +1707,7 @@ def sync_latest_session_file_report(agent_id: str) -> int:
         # of stale duplicate bubbles and unread counts drift.
         item = max(candidates, key=lambda row: int(row.get("ts") or 0))
         key = ("assistant", item.get("content"))
-        if key not in existing:
+        if key not in existing and duplicate_terminal_response_index(entries, str(item.get("content") or "")) is None:
             entries.append(item)
             existing.add(key)
             appended = 1
