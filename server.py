@@ -4121,8 +4121,6 @@ def summarize_agents() -> dict[str, Any]:
     expire_stale_work_items(now)
     sessions = get_sessions_cached(timeout=18)
     scan_completion_events_from_local_sessions(sessions)
-    resource_usage = summarize_resource_usage()
-    resource_buckets = resource_usage.get("usage") if isinstance(resource_usage, dict) else {}
 
     output = []
     for raw_base in AGENTS:
@@ -4318,7 +4316,6 @@ def summarize_agents() -> dict[str, Any]:
             "contextSessionTokens": context_info.get("sessionContextTokens"),
             "contextHandoff": latest_handoff_meta(base["id"], context_info.get("sessionKey")),
             "subagents": subagent_summary,
-            "resourceUsage": (resource_buckets or {}).get(base["id"], {"cpuPercent": 0, "rssMb": 0, "processCount": 0, "topProcesses": []}),
             "unreadCount": unread_count(base["id"]),
         }
         output.append(agent_payload)
@@ -4335,7 +4332,6 @@ def summarize_agents() -> dict[str, Any]:
         "opsAlerts": ops_alerts,
         "acpSessions": acp_sessions,
         "mcp": mcp_status,
-        "resourceUsage": {"ok": resource_usage.get("ok"), "generatedAt": resource_usage.get("generatedAt"), "cacheTtlSeconds": resource_usage.get("cacheTtlSeconds"), "shared": {key: value for key, value in (resource_buckets or {}).items() if key not in {a["id"] for a in AGENTS}}},
         "counts": {
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),

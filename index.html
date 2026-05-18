@@ -549,63 +549,6 @@
       .model-chip.claude { border-color: rgba(255,184,107,.42); color: #ffe8c6; }
 
 
-      .resource-gauges {
-        width: min(190px, 100%);
-        display: grid;
-        grid-template-columns: repeat(2, minmax(58px, 1fr));
-        gap: 8px;
-        margin-top: 9px;
-      }
-
-      .resource-gauges.empty {
-        width: fit-content;
-        grid-template-columns: 1fr;
-        padding: 5px 9px;
-        border: 1px dashed rgba(255,255,255,.16);
-        border-radius: 999px;
-        color: var(--muted);
-        font-size: 10px;
-        font-weight: 850;
-        background: rgba(255,255,255,.035);
-      }
-
-      .resource-gauge {
-        --pct: 0;
-        --gauge-color: var(--idle);
-        display: grid;
-        justify-items: center;
-        gap: 2px;
-        font-size: 9px;
-        color: #d7e8f8;
-      }
-
-      .gauge-dial {
-        width: 52px;
-        height: 30px;
-        border-radius: 52px 52px 10px 10px;
-        background: conic-gradient(from 270deg at 50% 100%, var(--gauge-color) calc(var(--pct) * 1.8deg), rgba(255,255,255,.12) 0 180deg, transparent 0);
-        position: relative;
-        overflow: hidden;
-        border: 1px solid rgba(255,255,255,.12);
-      }
-
-      .gauge-dial::after {
-        content: '';
-        position: absolute;
-        left: 9px;
-        right: 9px;
-        bottom: -13px;
-        height: 25px;
-        border-radius: 999px;
-        background: #111827;
-        border: 1px solid rgba(255,255,255,.08);
-      }
-
-      .gauge-value { font-weight: 900; line-height: 1; }
-      .gauge-label { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .05em; }
-      .resource-gauge.warn { --gauge-color: var(--lag); }
-      .resource-gauge.danger { --gauge-color: var(--danger); }
-
       .agent.work {
         border-color: rgba(98, 230, 155, 0.45);
         background: rgba(98, 230, 155, 0.09);
@@ -2617,32 +2560,6 @@
 
 
 
-      function resourceClass(value, warn, danger) {
-        const n = Number(value || 0);
-        if (n >= danger) return 'danger';
-        if (n >= warn) return 'warn';
-        return '';
-      }
-
-      function renderResourceGauges(agent) {
-        const usage = agent.resourceUsage || {};
-        const cpu = Math.max(0, Number(usage.cpuPercent || 0));
-        const mem = Math.max(0, Number(usage.rssMb || 0));
-        const count = Number(usage.processCount || 0);
-        const top = Array.isArray(usage.topProcesses) ? usage.topProcesses : [];
-        if (!count) {
-          return `<div class="resource-gauges empty" title="Gateway 내부/공용 프로세스에서 돌고 있거나 현재 에이전트 전용 OS 프로세스가 없습니다.">개별 프로세스 없음</div>`;
-        }
-        const cpuPct = Math.min(100, cpu);
-        const memPct = Math.min(100, Math.round((mem / 1024) * 100));
-        const detail = top.map((p) => `PID ${p.pid} · CPU ${p.cpuPercent}% · MEM ${p.rssMb}MB · ${p.cmd || ''}`).join('\n');
-        const title = `가벼운 45초 캐시 측정값 · 매핑 프로세스 ${count}개\n${detail}`;
-        return `<div class="resource-gauges" title="${escapeHtml(title)}" aria-label="리소스 사용량">
-          <div class="resource-gauge ${resourceClass(cpu, 30, 70)}" style="--pct:${cpuPct}"><span class="gauge-dial" aria-hidden="true"></span><span class="gauge-value">${cpu.toFixed(cpu >= 10 ? 0 : 1)}%</span><span class="gauge-label">CPU</span></div>
-          <div class="resource-gauge ${resourceClass(mem, 512, 1024)}" style="--pct:${memPct}"><span class="gauge-dial" aria-hidden="true"></span><span class="gauge-value">${mem >= 1024 ? `${(mem / 1024).toFixed(1)}G` : `${mem.toFixed(0)}M`}</span><span class="gauge-label">MEM</span></div>
-        </div>`;
-      }
-
       function renderModelChip(agent) {
         const label = compactModelLabel(agent);
         const full = [agent.contextModel, agent.contextProvider, agent.contextSource].filter(Boolean).join(' · ');
@@ -2697,7 +2614,6 @@
             <div class="status">${escapeHtml(agent.recoveryCheckNeeded ? (agent.detail || '응답 회수 확인이 필요합니다.') : (agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중'))))}</div>
             ${renderContextBattery(agent)}
             ${renderTags(agent)}
-            ${renderResourceGauges(agent)}
             ${renderSubagents(agent)}
           </div>`;
         card.addEventListener('click', () => {
