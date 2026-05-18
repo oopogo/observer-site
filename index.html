@@ -3395,6 +3395,21 @@
             <div class="gateway-event-raw">RSS ${memoryValue(latest.rssMb)} · heapUsed ${memoryValue(latest.heapUsedMb)} · heapTotal ${memoryValue(latest.heapTotalMb)} · external ${memoryValue(latest.externalMb)} · arrayBuffers ${memoryValue(latest.arrayBuffersMb)}</div>
             <div class="gateway-event-time">PID ${escapeHtml(payload.pid || '-')} · /proc RSS ${memoryValue(payload.health?.rssMb)} · anon ${(Number(rollup.anonymousKb || 0) / 1024).toFixed(0)}MB · privateDirty ${(Number(rollup.private_DirtyKb || 0) / 1024).toFixed(0)}MB</div>
           </article>` : `<div class="message system">진단 메모리 샘플이 없습니다. ${escapeHtml(payload?.error || '')}</div>`;
+        const correlations = payload?.correlations || {};
+        const stability = payload?.stability || {};
+        const heartbeat = stability.latestHeartbeat || {};
+        const stuck = stability.latestStuck || {};
+        const typeCounts = stability.typeCounts || {};
+        const typeText = Object.entries(typeCounts).slice(0, 6).map(([key, value]) => `${key} ${value}`).join(' · ') || '-';
+        const correlationHtml = `
+          <article class="gateway-event-card ${stuck.ts ? 'warn' : 'info'}">
+            <div class="gateway-event-head"><span>상관지표</span><span class="gateway-event-time">stability ${escapeHtml(stability.count ?? '-')} / ${escapeHtml(stability.capacity ?? '-')}</span></div>
+            <div class="gateway-event-reason">heap 증가와 같이 볼 카운터입니다. 같이 오르는 값이 1차 용의자입니다.</div>
+            <div class="gateway-event-raw">로컬 세션 ${escapeHtml(correlations.localSessionCount ?? '-')}개 · active ${escapeHtml(correlations.localActiveSessions ?? '-')}개 · 세션 토큰 합 ${escapeHtml(formatTokenCount(correlations.localSessionTotalTokens || 0))} · 최대 ${escapeHtml(formatTokenCount(correlations.localSessionMaxTokens || 0))}</div>
+            <div class="gateway-event-raw">관제 히스토리 ${escapeHtml(correlations.observerHistoryMessages ?? '-')}msg · ${escapeHtml(correlations.observerHistoryMb ?? '-')}MB · chars ${escapeHtml(formatTokenCount(correlations.observerHistoryChars || 0))}</div>
+            <div class="gateway-event-raw">큐 active ${escapeHtml(heartbeat.active ?? '-')} · queued ${escapeHtml(heartbeat.queued ?? '-')} · maxDepth ${escapeHtml(stability.maxQueueDepth ?? '-')} · stuck ${stuck.ageMs ? `${Math.round(Number(stuck.ageMs) / 1000)}초` : '-'}</div>
+            <div class="gateway-event-time">최근 이벤트: ${escapeHtml(typeText)}</div>
+          </article>`;
         const pressureHtml = pressures.length ? pressures.map((item) => `
           <article class="gateway-event-card warn">
             <div class="gateway-event-head"><span>메모리 압박 · ${escapeHtml(item.reason || '-')}</span><span class="gateway-event-time">${escapeHtml(gatewayEventTime(item.ts))}</span></div>
@@ -3405,7 +3420,7 @@
             <div class="gateway-event-head"><span>샘플 #${escapeHtml(item.seq || '-')}</span><span class="gateway-event-time">${escapeHtml(gatewayEventTime(item.ts))}</span></div>
             <div class="gateway-event-raw">RSS ${memoryValue(item.rssMb)} · heapUsed ${memoryValue(item.heapUsedMb)} · heapTotal ${memoryValue(item.heapTotalMb)} · external ${memoryValue(item.externalMb)} · arrayBuffers ${memoryValue(item.arrayBuffersMb)}</div>
           </article>`).join('') : '';
-        gatewayMemoryList.innerHTML = latestHtml + pressureHtml + trendHtml;
+        gatewayMemoryList.innerHTML = latestHtml + correlationHtml + pressureHtml + trendHtml;
       }
 
       async function loadGatewayMemory() {

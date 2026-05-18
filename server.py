@@ -2932,7 +2932,7 @@ def proc_memory_rollup(pid: int) -> dict[str, Any]:
     return result
 
 
-def latest_gateway_memory_events(limit: int = 120) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+def latest_gateway_memory_events(limit: int = 120) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], str | None]:
     try:
         proc = subprocess.run(
             [OPENCLAW_BIN, "gateway", "stability", "--json", "--limit", str(max(20, min(limit, 300)))],
@@ -2941,14 +2941,27 @@ def latest_gateway_memory_events(limit: int = 120) -> tuple[list[dict[str, Any]]
             timeout=10,
         )
         if proc.returncode != 0:
-            return [], [], (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            return [], [], {}, (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
         payload = json.loads(proc.stdout or "{}")
         samples: list[dict[str, Any]] = []
         pressures: list[dict[str, Any]] = []
-        for event in payload.get("events", []):
+        type_counts: dict[str, int] = {}
+        latest_heartbeat: dict[str, Any] | None = None
+        latest_stuck: dict[str, Any] | None = None
+        max_queue_depth = 0
+        events = payload.get("events", []) if isinstance(payload.get("events"), list) else []
+        for event in events:
             if not isinstance(event, dict):
                 continue
-            if event.get("type") not in {"diagnostic.memory.sample", "diagnostic.memory.pressure"}:
+            event_type = str(event.get("type") or "unknown")
+            type_counts[event_type] = type_counts.get(event_type, 0) + 1
+            if isinstance(event.get("queueDepth"), (int, float)):
+                max_queue_depth = max(max_queue_depth, int(event.get("queueDepth") or 0))
+            if event_type == "diagnostic.heartbeat":
+                latest_heartbeat = event
+            if event_type == "session.stuck":
+                latest_stuck = event
+            if event_type not in {"diagnostic.memory.sample", "diagnostic.memory.pressure"}:
                 continue
             memory = event.get("memory") if isinstance(event.get("memory"), dict) else {}
             item = {
@@ -2963,13 +2976,69 @@ def latest_gateway_memory_events(limit: int = 120) -> tuple[list[dict[str, Any]]
                 "externalMb": bytes_to_mb(memory.get("externalBytes")),
                 "arrayBuffersMb": bytes_to_mb(memory.get("arrayBuffersBytes")),
             }
-            if event.get("type") == "diagnostic.memory.sample":
+            if event_type == "diagnostic.memory.sample":
                 samples.append(item)
             else:
                 pressures.append(item)
-        return samples, pressures, None
+        meta = {
+            "capacity": payload.get("capacity"),
+            "count": payload.get("count"),
+            "dropped": payload.get("dropped"),
+            "firstSeq": payload.get("firstSeq"),
+            "lastSeq": payload.get("lastSeq"),
+            "windowEventCount": len(events),
+            "typeCounts": dict(sorted(type_counts.items(), key=lambda kv: kv[1], reverse=True)[:12]),
+            "latestHeartbeat": latest_heartbeat,
+            "latestStuck": latest_stuck,
+            "maxQueueDepth": max_queue_depth,
+        }
+        return samples, pressures, meta, None
     except Exception as exc:
-        return [], [], str(exc)
+        return [], [], {}, str(exc)
+
+
+def local_memory_correlation_metrics() -> dict[str, Any]:
+    history = load_history()
+    history_messages = sum(len(items) for items in history.values() if isinstance(items, list))
+    history_chars = 0
+    for items in history.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                history_chars += len(str(item.get("content") or item.get("text") or item.get("message") or ""))
+    sessions = load_local_sessions_snapshot()
+    active = 0
+    total_tokens = 0
+    max_tokens = 0
+    for row in sessions:
+        status = normalize_status(str(row.get("status") or ""))
+        if status == "working":
+            active += 1
+        tokens = safe_positive_int(row.get("totalTokens") or row.get("contextTokens") or row.get("tokens")) or 0
+        total_tokens += tokens
+        max_tokens = max(max_tokens, tokens)
+    session_files = 0
+    session_json_bytes = 0
+    agents_root = Path("/home/oopogo/.openclaw/agents")
+    for path in agents_root.glob("*/sessions/sessions.json"):
+        session_files += 1
+        try:
+            session_json_bytes += path.stat().st_size
+        except Exception:
+            pass
+    return {
+        "localSessionCount": len(sessions),
+        "localActiveSessions": active,
+        "localSessionFiles": session_files,
+        "localSessionJsonMb": round(session_json_bytes / 1024 / 1024, 2),
+        "localSessionTotalTokens": total_tokens,
+        "localSessionMaxTokens": max_tokens,
+        "observerHistoryAgents": len(history),
+        "observerHistoryMessages": history_messages,
+        "observerHistoryChars": history_chars,
+        "observerHistoryMb": round((HISTORY_PATH.stat().st_size if HISTORY_PATH.exists() else 0) / 1024 / 1024, 2),
+    }
 
 
 def collect_gateway_memory(limit: int = 120) -> dict[str, Any]:
@@ -2988,7 +3057,8 @@ def collect_gateway_memory(limit: int = 120) -> dict[str, Any]:
         pid = 0
     health = gateway_process_health(pid)
     rollup = proc_memory_rollup(pid)
-    samples, pressures, error = latest_gateway_memory_events(limit)
+    samples, pressures, stability, error = latest_gateway_memory_events(limit)
+    correlations = local_memory_correlation_metrics()
     latest = samples[-1] if samples else None
     conclusion = "진단 샘플 없음"
     if latest:
@@ -3010,6 +3080,8 @@ def collect_gateway_memory(limit: int = 120) -> dict[str, Any]:
         "latest": latest,
         "samples": samples[-20:],
         "pressures": pressures[-20:],
+        "stability": stability,
+        "correlations": correlations,
         "conclusion": conclusion,
         "error": error,
     }
