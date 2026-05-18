@@ -548,6 +548,51 @@
       .model-chip.kimi { border-color: rgba(167,139,250,.42); color: #efe7ff; }
       .model-chip.claude { border-color: rgba(255,184,107,.42); color: #ffe8c6; }
 
+
+      .resource-gauges {
+        width: 104px;
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 5px;
+      }
+
+      .resource-gauge {
+        --pct: 0;
+        --gauge-color: var(--idle);
+        display: grid;
+        justify-items: center;
+        gap: 2px;
+        font-size: 9px;
+        color: #d7e8f8;
+      }
+
+      .gauge-dial {
+        width: 42px;
+        height: 25px;
+        border-radius: 42px 42px 9px 9px;
+        background: conic-gradient(from 270deg at 50% 100%, var(--gauge-color) calc(var(--pct) * 1.8deg), rgba(255,255,255,.12) 0 180deg, transparent 0);
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,.12);
+      }
+
+      .gauge-dial::after {
+        content: '';
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        bottom: -11px;
+        height: 22px;
+        border-radius: 999px;
+        background: #111827;
+        border: 1px solid rgba(255,255,255,.08);
+      }
+
+      .gauge-value { font-weight: 900; line-height: 1; }
+      .gauge-label { color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .05em; }
+      .resource-gauge.warn { --gauge-color: var(--lag); }
+      .resource-gauge.danger { --gauge-color: var(--danger); }
+
       .agent.work {
         border-color: rgba(98, 230, 155, 0.45);
         background: rgba(98, 230, 155, 0.09);
@@ -2557,6 +2602,33 @@
         return '';
       }
 
+
+
+      function resourceClass(value, warn, danger) {
+        const n = Number(value || 0);
+        if (n >= danger) return 'danger';
+        if (n >= warn) return 'warn';
+        return '';
+      }
+
+      function renderResourceGauges(agent) {
+        const usage = agent.resourceUsage || {};
+        const cpu = Math.max(0, Number(usage.cpuPercent || 0));
+        const mem = Math.max(0, Number(usage.rssMb || 0));
+        const count = Number(usage.processCount || 0);
+        const cpuPct = Math.min(100, cpu);
+        const memPct = Math.min(100, Math.round((mem / 1024) * 100));
+        const top = Array.isArray(usage.topProcesses) ? usage.topProcesses : [];
+        const detail = top.length
+          ? top.map((p) => `PID ${p.pid} · CPU ${p.cpuPercent}% · MEM ${p.rssMb}MB · ${p.cmd || ''}`).join('\n')
+          : '이 에이전트로 매핑된 프로세스가 없습니다.';
+        const title = `가벼운 45초 캐시 측정값 · 프로세스 ${count}개\n${detail}`;
+        return `<div class="resource-gauges" title="${escapeHtml(title)}" aria-label="리소스 사용량">
+          <div class="resource-gauge ${resourceClass(cpu, 30, 70)}" style="--pct:${cpuPct}"><span class="gauge-dial" aria-hidden="true"></span><span class="gauge-value">${cpu.toFixed(cpu >= 10 ? 0 : 1)}%</span><span class="gauge-label">CPU</span></div>
+          <div class="resource-gauge ${resourceClass(mem, 512, 1024)}" style="--pct:${memPct}"><span class="gauge-dial" aria-hidden="true"></span><span class="gauge-value">${mem >= 1024 ? `${(mem / 1024).toFixed(1)}G` : `${mem.toFixed(0)}M`}</span><span class="gauge-label">MEM</span></div>
+        </div>`;
+      }
+
       function renderModelChip(agent) {
         const label = compactModelLabel(agent);
         const full = [agent.contextModel, agent.contextProvider, agent.contextSource].filter(Boolean).join(' · ');
@@ -2605,7 +2677,7 @@
         card.innerHTML = `
           ${unreadHtml}
           <span class="state-badge ${stateBadgeClass(agent.state, agent)}">${stateLabel(agent.state, agent)}</span>
-          <div class="orb-stack"><div class="orb">${orbContent}</div>${renderModelChip(agent)}</div>
+          <div class="orb-stack"><div class="orb">${orbContent}</div>${renderModelChip(agent)}${renderResourceGauges(agent)}</div>
           <div>
             <div class="name">${escapeHtml(agent.name)}</div>
             <div class="status">${escapeHtml(agent.recoveryCheckNeeded ? (agent.detail || '응답 회수 확인이 필요합니다.') : (agent.needsSilenceReport ? '관제 이벤트: 최근 응답/보고가 확인되지 않았습니다.' : (agent.activeWork ? '관제 이벤트: 등록된 작업이 있습니다.' : (agent.detail || agent.statusText || '상태 확인 중'))))}</div>

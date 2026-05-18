@@ -70,6 +70,7 @@ def is_call_only_agent(agent: dict[str, Any]) -> bool:
     return "CALL-ONLY" in {str(tag).upper() for tag in (agent.get("tags") or [])}
 CACHE_TTL_SECONDS = 8
 GATEWAY_CACHE_TTL_SECONDS = 30
+RESOURCE_USAGE_CACHE_TTL_SECONDS = 45
 GATEWAY_SESSION_SUMMARY_ENABLED = False
 MAX_SETTINGS_BODY_BYTES = 16_000_000
 MAX_CHAT_IMAGE_BYTES = 8_000_000
@@ -78,6 +79,7 @@ AGENTS_CACHE: dict[str, Any] | None = None
 GATEWAY_CACHE: dict[str, Any] | None = None
 SESSIONS_CACHE: dict[str, Any] | None = None
 GATEWAY_CPU_SAMPLE: dict[int, tuple[int, int]] = {}
+RESOURCE_USAGE_CACHE: dict[str, Any] | None = None
 HISTORY_SYNC_TS: dict[str, float] = {}
 SANITIZE_SYNC_TS = 0.0
 CACHE_LOCK = threading.Lock()
@@ -2715,6 +2717,87 @@ def gateway_process_health(pid: int) -> dict[str, Any]:
 
 
 
+def classify_resource_owner(cmd: str, known_agent_ids: set[str]) -> str:
+    normalized = cmd.replace("\\", "/")
+    low = normalized.lower()
+    for agent_id in known_agent_ids:
+        safe = re.escape(agent_id.lower())
+        if re.search(rf"agent:{safe}(:|\b)", low):
+            return agent_id
+        if f"/agents/{agent_id.lower()}/" in low:
+            return agent_id
+        if re.search(rf"\bagentid[=\s:]+{safe}\b", low):
+            return agent_id
+        if re.search(rf"\bsession:agent:{safe}(:|\b)", low):
+            return agent_id
+    if "observer-site/server.py" in low or "workspace-observer" in low:
+        return "observer"
+    if "openclaw-gateway" in low or " openclaw gateway" in low:
+        return "gateway"
+    if "/.openclaw/" in low or "openclaw" in low or "codex" in low or "claude" in low:
+        return "unmapped"
+    return "other"
+
+
+def summarize_resource_usage() -> dict[str, Any]:
+    global RESOURCE_USAGE_CACHE
+    now = int(time.time() * 1000)
+    if isinstance(RESOURCE_USAGE_CACHE, dict):
+        age_ms = now - int(RESOURCE_USAGE_CACHE.get("generatedAt") or 0)
+        if age_ms < RESOURCE_USAGE_CACHE_TTL_SECONDS * 1000:
+            return {**RESOURCE_USAGE_CACHE, "cacheAgeMs": max(0, age_ms)}
+    known_agent_ids = {str(agent.get("id")) for agent in AGENTS}
+    buckets: dict[str, dict[str, Any]] = {}
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,pcpu=,rss=,etime=,args="],
+            capture_output=True,
+            text=True,
+            timeout=1.2,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "ps failed").strip())
+        for raw in result.stdout.splitlines():
+            parts = raw.strip().split(None, 5)
+            if len(parts) < 6:
+                continue
+            pid_s, ppid_s, cpu_s, rss_s, elapsed, cmd = parts
+            try:
+                pid = int(pid_s)
+                ppid = int(ppid_s)
+                cpu = float(cpu_s)
+                rss_mb = round(float(rss_s) / 1024, 1)
+            except Exception:
+                continue
+            owner = classify_resource_owner(cmd, known_agent_ids)
+            if owner == "other":
+                continue
+            # This endpoint must stay cheap and must not make its own short-lived
+            # ps/shell helpers look like the culprit. The long-lived observer-site
+            # server itself is counted under observer so this feature can police its own cost.
+            if "ps -eo pid=,ppid=,pcpu=,rss=,etime=,args=" in cmd:
+                continue
+            bucket = buckets.setdefault(owner, {"cpuPercent": 0.0, "rssMb": 0.0, "processCount": 0, "topProcesses": []})
+            bucket["cpuPercent"] = round(float(bucket["cpuPercent"]) + cpu, 1)
+            bucket["rssMb"] = round(float(bucket["rssMb"]) + rss_mb, 1)
+            bucket["processCount"] += 1
+            bucket["topProcesses"].append({
+                "pid": pid,
+                "ppid": ppid,
+                "cpuPercent": round(cpu, 1),
+                "rssMb": rss_mb,
+                "elapsed": elapsed,
+                "cmd": " ".join(cmd.split())[:240],
+            })
+        for bucket in buckets.values():
+            bucket["topProcesses"] = sorted(bucket["topProcesses"], key=lambda p: (p["rssMb"], p["cpuPercent"]), reverse=True)[:5]
+        payload = {"ok": True, "generatedAt": now, "cacheTtlSeconds": RESOURCE_USAGE_CACHE_TTL_SECONDS, "usage": buckets}
+    except Exception as exc:
+        payload = {"ok": False, "generatedAt": now, "cacheTtlSeconds": RESOURCE_USAGE_CACHE_TTL_SECONDS, "usage": {}, "error": str(exc)}
+    RESOURCE_USAGE_CACHE = payload
+    return payload
+
+
 def cron_schedule_label(schedule: dict[str, Any]) -> str:
     if not isinstance(schedule, dict):
         return "일정 없음"
@@ -4038,6 +4121,8 @@ def summarize_agents() -> dict[str, Any]:
     expire_stale_work_items(now)
     sessions = get_sessions_cached(timeout=18)
     scan_completion_events_from_local_sessions(sessions)
+    resource_usage = summarize_resource_usage()
+    resource_buckets = resource_usage.get("usage") if isinstance(resource_usage, dict) else {}
 
     output = []
     for raw_base in AGENTS:
@@ -4233,6 +4318,7 @@ def summarize_agents() -> dict[str, Any]:
             "contextSessionTokens": context_info.get("sessionContextTokens"),
             "contextHandoff": latest_handoff_meta(base["id"], context_info.get("sessionKey")),
             "subagents": subagent_summary,
+            "resourceUsage": (resource_buckets or {}).get(base["id"], {"cpuPercent": 0, "rssMb": 0, "processCount": 0, "topProcesses": []}),
             "unreadCount": unread_count(base["id"]),
         }
         output.append(agent_payload)
@@ -4249,6 +4335,7 @@ def summarize_agents() -> dict[str, Any]:
         "opsAlerts": ops_alerts,
         "acpSessions": acp_sessions,
         "mcp": mcp_status,
+        "resourceUsage": {"ok": resource_usage.get("ok"), "generatedAt": resource_usage.get("generatedAt"), "cacheTtlSeconds": resource_usage.get("cacheTtlSeconds"), "shared": {key: value for key, value in (resource_buckets or {}).items() if key not in {a["id"] for a in AGENTS}}},
         "counts": {
             "total": len(output),
             "idle": sum(1 for a in output if a["state"] == "idle"),
