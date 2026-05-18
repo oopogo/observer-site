@@ -11,6 +11,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -2822,6 +2824,143 @@ def summarize_gateway_status() -> dict[str, Any]:
     }
 
 
+
+def gateway_event_timestamp_ms(line: str) -> int:
+    try:
+        data = json.loads(line)
+        raw_time = str(data.get("time") or data.get("_meta", {}).get("date") or "")
+        if raw_time:
+            raw = raw_time.strip().replace("Z", "+00:00")
+            return int(datetime.fromisoformat(raw).timestamp() * 1000)
+    except Exception:
+        pass
+    patterns = [
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?)",
+        r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s+[+-]\d{2}:?\d{2})?)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, line)
+        if not m:
+            continue
+        raw = m.group(1).strip().replace(" ", "T", 1).replace("Z", "+00:00")
+        raw = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", raw)
+        try:
+            return int(datetime.fromisoformat(raw).timestamp() * 1000)
+        except Exception:
+            try:
+                return int(time.mktime(time.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")) * 1000)
+            except Exception:
+                continue
+    return 0
+
+
+def gateway_event_kind(line: str) -> tuple[str, str, str]:
+    low = line.lower()
+    if "scheduled restart job" in low or "restart counter" in low:
+        return "restart", "systemd 재시작 예약", "systemd가 openclaw-gateway 재시작을 예약했습니다."
+    if "started openclaw" in low or "started openclaw-gateway" in low or "starting openclaw" in low:
+        return "start", "게이트웨이 시작", "openclaw-gateway 서비스가 시작됐습니다."
+    if "stopped openclaw" in low or "stopping openclaw" in low:
+        return "stop", "게이트웨이 중지", "openclaw-gateway 서비스가 중지됐습니다."
+    if "main process exited" in low or "failed with result" in low or "code=killed" in low or "code=exited" in low:
+        return "crash", "게이트웨이 프로세스 종료", "systemd가 게이트웨이 프로세스 종료/실패를 기록했습니다."
+    if "polling stall detected" in low:
+        return "disconnect", "Telegram polling stall", "Telegram getUpdates 완료가 멈춰 polling runner를 재시작했습니다."
+    if "polling runner stop timed out" in low:
+        return "restart", "Polling runner 강제 재시작", "Telegram polling runner 정지가 지연되어 강제 재시작 주기에 들어갔습니다."
+    if "network request" in low and "failed" in low:
+        return "network", "네트워크 요청 실패", "외부 API 네트워크 요청 실패가 감지됐습니다."
+    if "websocket" in low and ("close" in low or "disconnect" in low or "error" in low):
+        return "disconnect", "WebSocket 연결 이슈", "Gateway WebSocket 연결 끊김/오류 로그입니다."
+    if "llm request timed out" in low or "context overflow" in low or "auto-compaction failed" in low:
+        return "degraded", "에이전트 실행 지연", "모델 호출 timeout/context overflow 등으로 에이전트 실행이 지연됐습니다."
+    if "error" in low or "fatal" in low or "uncaught" in low or "eaddrinuse" in low or "econnreset" in low or "econnrefused" in low:
+        return "error", "Gateway 오류 로그", "게이트웨이 로그에 오류 후보가 기록됐습니다."
+    return "info", "Gateway 로그", "게이트웨이 관련 로그입니다."
+
+
+def gateway_event_relevant(line: str) -> bool:
+    low = line.lower()
+    needles = [
+        "openclaw-gateway", "started openclaw", "stopped openclaw", "scheduled restart", "main process exited",
+        "failed with result", "polling stall", "polling runner", "network request", "getupdates", "websocket",
+        "llm request timed out", "context overflow", "auto-compaction failed", "eaddrinuse", "econnreset", "econnrefused",
+        "fatal", "uncaught",
+    ]
+    return any(token in low for token in needles)
+
+
+def gateway_event_summary(line: str) -> str:
+    try:
+        data = json.loads(line)
+        parts = []
+        for key in ("1", "message", "msg", "error"):
+            value = data.get(key)
+            if value:
+                parts.append(str(value))
+        meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
+        level = meta.get("logLevelName")
+        if level and parts:
+            parts[0] = f"{level}: {parts[0]}"
+        if parts:
+            return " · ".join(parts)[:500]
+    except Exception:
+        pass
+    cleaned = re.sub(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|\s+[+-]\d{2}:?\d{2})?\s*", "", line).strip()
+    cleaned = re.sub(r"^\S+\s+node\[\d+\]:\s*", "", cleaned).strip()
+    cleaned = re.sub(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{2}:?\d{2}\s*", "", cleaned).strip()
+    return cleaned[:500]
+
+
+def collect_gateway_events(limit: int = 120) -> dict[str, Any]:
+    candidates: list[tuple[int, str, str]] = []
+    try:
+        journal = subprocess.run(
+            ["journalctl", "--user", "-u", "openclaw-gateway.service", "--since", "7 days ago", "-o", "short-iso", "--no-pager", "-n", "1200"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        for line in journal.stdout.splitlines():
+            if gateway_event_relevant(line):
+                candidates.append((gateway_event_timestamp_ms(line), "journal", line))
+    except Exception as exc:
+        candidates.append((int(time.time() * 1000), "observer-site", f"journalctl 조회 실패: {exc}"))
+
+    for path in sorted(Path("/tmp/openclaw").glob("openclaw-*.log"))[-4:]:
+        try:
+            lines = path.read_text(errors="replace").splitlines()[-2500:]
+        except Exception:
+            continue
+        for line in lines:
+            if gateway_event_relevant(line):
+                candidates.append((gateway_event_timestamp_ms(line), path.name, line))
+
+    seen: set[str] = set()
+    events: list[dict[str, Any]] = []
+    for ts, source, line in sorted(candidates, key=lambda item: item[0] or 0, reverse=True):
+        if not line.strip():
+            continue
+        kind, title, reason = gateway_event_kind(line)
+        summary = gateway_event_summary(line)
+        key = f"{ts}|{kind}|{summary[:180]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append({
+            "ts": ts,
+            "source": source,
+            "kind": kind,
+            "title": title,
+            "reason": reason,
+            "summary": summary,
+            "raw": line[:1000],
+        })
+        if len(events) >= limit:
+            break
+    return {"ok": True, "generatedAt": int(time.time() * 1000), "window": "최근 7일 / 로그 최근 구간", "events": events}
+
+
 def subagent_owner_id(session: dict[str, Any]) -> str | None:
     key = str(session.get("key") or "")
     spawned = str(session.get("spawnedBy") or "")
@@ -4488,6 +4627,13 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/cron/jobs":
             payload = summarize_cron_jobs()
+            self.json_response(payload, 200 if payload.get("ok") else 500)
+            return
+        if path == "/api/gateway-events":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            limit = safe_positive_int((qs.get("limit") or ["120"])[0]) or 120
+            payload = collect_gateway_events(min(limit, 300))
             self.json_response(payload, 200 if payload.get("ok") else 500)
             return
         if path == "/api/gateway-status":

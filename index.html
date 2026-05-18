@@ -97,7 +97,7 @@
 
       .gateway-health-strip {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 10px;
         margin: -2px 0 14px;
       }
@@ -179,6 +179,50 @@
         background: var(--danger);
         box-shadow: 0 0 16px var(--danger);
       }
+
+
+
+      .gateway-events-button {
+        width: 100%;
+        margin-top: 8px;
+        min-height: 32px;
+        border-radius: 12px;
+        font-size: 12px;
+      }
+
+      .gateway-event-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .gateway-event-card {
+        border: 1px solid rgba(255,255,255,.13);
+        border-radius: 16px;
+        padding: 12px;
+        background: rgba(255,255,255,.055);
+      }
+
+      .gateway-event-card.restart, .gateway-event-card.disconnect, .gateway-event-card.crash, .gateway-event-card.error {
+        border-color: rgba(255, 184, 107, 0.42);
+        background: rgba(120, 53, 15, 0.16);
+      }
+
+      .gateway-event-card.crash, .gateway-event-card.error {
+        border-color: rgba(255, 107, 138, 0.46);
+        background: rgba(127, 29, 29, 0.16);
+      }
+
+      .gateway-event-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: baseline;
+        font-weight: 900;
+      }
+
+      .gateway-event-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .gateway-event-reason { margin-top: 6px; color: #dff7ff; font-size: 13px; line-height: 1.45; }
+      .gateway-event-raw { margin-top: 6px; color: #aab8cf; font-size: 12px; line-height: 1.45; word-break: break-word; }
 
       .summary {
         display: grid;
@@ -1912,6 +1956,7 @@
         <div class="gateway-health-card" id="gatewayMemoryCard"><div class="gateway-health-label">RSS 메모리</div><div class="gateway-health-value" id="gatewayMemory">-</div></div>
         <div class="gateway-health-card" id="gatewayCallsCard"><div class="gateway-health-label">Gateway Call</div><div class="gateway-health-value" id="gatewayCalls">-</div></div>
         <div class="gateway-health-card" id="gatewayHealthCard"><div class="gateway-health-label">부하 경고</div><div class="gateway-health-value" id="gatewayHealth">-</div></div>
+        <div class="gateway-health-card"><div class="gateway-health-label">원인분석</div><div class="gateway-health-value">이벤트</div><button class="recover-button compact gateway-events-button" type="button" id="gatewayEventsButton">재실행/끊김 기록</button></div>
       </section>
 
       <section class="summary" id="statusSummary" aria-label="상태별 요약">
@@ -2080,6 +2125,25 @@
           <div class="chat-body">
             <div class="editor-list" id="editorList"></div>
           </div>
+        </section>
+      </div>
+
+      <div class="chat-backdrop" id="gatewayEventsBackdrop" aria-hidden="true">
+        <section class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="gatewayEventsTitle">
+          <div class="chat-head">
+            <div class="chat-agent">
+              <div class="mini-orb">GW</div>
+              <div>
+                <div class="chat-title" id="gatewayEventsTitle">게이트웨이 재실행/끊김 기록</div>
+                <div class="chat-subtitle" id="gatewayEventsSubtitle">최근 7일 systemd journal과 /tmp/openclaw 로그에서 원인 후보를 시간순으로 모읍니다.</div>
+              </div>
+            </div>
+            <div class="chat-head-actions">
+              <button class="recover-button compact" type="button" id="gatewayEventsRefresh">새로고침</button>
+              <button class="chat-close" type="button" id="gatewayEventsClose" aria-label="게이트웨이 기록 닫기">×</button>
+            </div>
+          </div>
+          <div class="chat-body"><div class="gateway-event-list" id="gatewayEventsList"><div class="message system">기록을 불러오는 중입니다.</div></div></div>
         </section>
       </div>
 
@@ -3231,6 +3295,61 @@
         gatewayHealth.textContent = warnings.length ? warnings.slice(0, 2).join(' · ') : '정상';
       }
 
+
+
+      function gatewayEventTime(ts) {
+        if (!ts) return '-';
+        try {
+          return new Date(ts).toLocaleString('ko-KR', { hour12: false });
+        } catch (_) {
+          return String(ts);
+        }
+      }
+
+      function renderGatewayEvents(payload) {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        if (!gatewayEventsList) return;
+        if (!events.length) {
+          gatewayEventsList.innerHTML = '<div class="message system">최근 기록에서 재실행/끊김 원인 후보를 찾지 못했습니다.</div>';
+          return;
+        }
+        gatewayEventsList.innerHTML = events.map((event) => `
+          <article class="gateway-event-card ${escapeHtml(event.kind || 'info')}">
+            <div class="gateway-event-head">
+              <span>${escapeHtml(event.title || 'Gateway 로그')}</span>
+              <span class="gateway-event-time">${escapeHtml(gatewayEventTime(event.ts))}</span>
+            </div>
+            <div class="gateway-event-reason">${escapeHtml(event.reason || '')}</div>
+            <div class="gateway-event-raw">${escapeHtml(event.summary || event.raw || '')}</div>
+            <div class="gateway-event-time">source: ${escapeHtml(event.source || '-')}</div>
+          </article>`).join('');
+      }
+
+      async function loadGatewayEvents() {
+        if (!gatewayEventsList) return;
+        gatewayEventsList.innerHTML = '<div class="message system">게이트웨이 기록을 불러오는 중입니다.</div>';
+        try {
+          const res = await fetch('/api/gateway-events?limit=160', { cache: 'no-store' });
+          const payload = await readJsonResponse(res, '게이트웨이 이벤트');
+          renderGatewayEvents(payload);
+        } catch (error) {
+          gatewayEventsList.innerHTML = `<div class="message system">게이트웨이 기록 조회 실패: ${escapeHtml(String(error))}</div>`;
+        }
+      }
+
+      function openGatewayEvents() {
+        if (!gatewayEventsBackdrop) return;
+        gatewayEventsBackdrop.classList.add('open');
+        gatewayEventsBackdrop.setAttribute('aria-hidden', 'false');
+        loadGatewayEvents();
+      }
+
+      function closeGatewayEvents() {
+        if (!gatewayEventsBackdrop) return;
+        gatewayEventsBackdrop.classList.remove('open');
+        gatewayEventsBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
       async function loadGatewayStatus() {
         try {
           const res = await fetch('/api/gateway-status', { cache: 'no-store' });
@@ -3256,6 +3375,14 @@
         runner.style.animation = `travel ${durationMs}ms linear 1 forwards`;
       }
 
+
+
+      gatewayEventsButton?.addEventListener('click', openGatewayEvents);
+      gatewayEventsClose?.addEventListener('click', closeGatewayEvents);
+      gatewayEventsRefresh?.addEventListener('click', loadGatewayEvents);
+      gatewayEventsBackdrop?.addEventListener('click', (event) => {
+        if (event.target === gatewayEventsBackdrop) closeGatewayEvents();
+      });
 
       document.addEventListener('click', (event) => {
         const button = event.target && event.target.closest ? event.target.closest('[data-acp-action]') : null;
