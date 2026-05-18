@@ -2174,8 +2174,17 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
             update_work_item(agent_id, request_id, "reported", report=True)
             close_latest_active_work_from_report(agent_id, session_key, text)
         else:
+            reason = "마지막 답변이 완료보고가 아니라 작업 착수/대기 답변입니다."
             emit_work_event(agent_id, "session.completed", "progress-only", session_key=session_key, request_id=request_id, summary=text)
-            update_work_item(agent_id, request_id, "reporting", report=True, reason="완료보고가 아니라 진행/착수/일반 답변입니다.")
+            mark_work_completed_unreported(agent_id, request_id, session_key=session_key, reason=reason)
+            send_completion_report_request(agent_id, {
+                "kind": "completed-unreported",
+                "requestId": request_id,
+                "workId": request_id,
+                "sessionKey": session_key,
+                "reason": reason,
+                "summary": text,
+            })
     except Exception as exc:
         replace_history_message(
             agent_id,
