@@ -2353,6 +2353,20 @@ def send_completion_report_request(agent_id: str, debt: dict[str, Any]) -> None:
     original_request_id = str(debt.get("requestId") or "")
     session_key = str(debt.get("sessionKey") or "") or observer_chat_session_key(agent_id)
     request_id = f"completion-report-{original_request_id or str(uuid.uuid4())}"
+    nudge_key = f"completion-report:{agent_id}:{original_request_id or session_key or 'unknown'}"
+    now_seconds = int(time.time())
+    nudges = load_nudges()
+    last = int(nudges.get(nudge_key, 0) or 0)
+    if last and now_seconds - last < COMPLETION_REPORT_RETRY_SECONDS:
+        return
+    for item in reversed(load_history().get(agent_id, [])):
+        if not isinstance(item, dict) or item.get("requestId") != request_id:
+            continue
+        if item.get("nudgeKind") == "completion-report" and now_seconds - int(item.get("ts") or 0) / 1000 < COMPLETION_REPORT_RETRY_SECONDS:
+            return
+        break
+    nudges[nudge_key] = now_seconds
+    save_nudges(nudges)
     mark_completion_report_requested(agent_id, original_request_id)
     append_history(agent_id, "system", "시스템: 완료보고 누락 감지 · 완료보고 회수 요청 중", {"status": "pending", "pending": True, "autoNudge": True, "nudgeKind": "completion-report", "sessionKey": session_key, "requestId": request_id, "hidden": True})
     message = (
