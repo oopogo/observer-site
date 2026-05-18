@@ -810,7 +810,7 @@ def close_completion_recovery_item(agent_id: str, recovery_request_id: str, text
     prefix = "completion-report-"
     if not recovery_request_id.startswith(prefix):
         return False
-    original_request_id = recovery_request_id[len(prefix):]
+    original_request_id = completion_report_base_request_id(recovery_request_id)
     if not original_request_id:
         return False
     now = int(time.time() * 1000)
@@ -856,7 +856,11 @@ def is_final_work_report_text(text: str) -> bool:
         "바로 마무리", "지금 바로", "우선 실제", "실패 우회", "작업 중", "진행 중",
         "하겠습니다", "하겠습니다.", "해두겠습니다", "놓겠습니다", "보겠습니다",
     )
-    if any(marker in value for marker in nonfinal_markers):
+    neutral_progress_phrases = (
+        "진행 중 작업 없음", "진행 중인 작업 없음", "현재 진행 중인 작업 없음",
+        "activeWork 없음", "subagent/background process 없음", "완료보고 누락 없음",
+    )
+    if any(marker in value for marker in nonfinal_markers) and not any(phrase in value for phrase in neutral_progress_phrases):
         return False
     if value.startswith("시작보고") or value.startswith("시작 보고"):
         return False
@@ -864,6 +868,18 @@ def is_final_work_report_text(text: str) -> bool:
     # ordinary Q/A answers as terminal. Work-item closure uses the stricter
     # is_completion_report_text() below.
     return True
+
+
+def completion_report_base_request_id(request_id: str) -> str:
+    value = str(request_id or "")
+    prefix = "completion-report-"
+    while value.startswith(prefix):
+        value = value[len(prefix):]
+    return value
+
+
+def is_completion_report_request_id(request_id: str) -> bool:
+    return str(request_id or "").startswith("completion-report-")
 
 
 def is_completion_report_text(text: str) -> bool:
@@ -2244,6 +2260,11 @@ def complete_chat_async(agent_id: str, agent_name: str, session_key: str, messag
         else:
             reason = "마지막 답변이 완료보고가 아니라 작업 착수/대기 답변입니다."
             emit_work_event(agent_id, "session.completed", "progress-only", session_key=session_key, request_id=request_id, summary=text)
+            # A recovery prompt must never create another recovery prompt for
+            # itself. Otherwise request IDs become
+            # completion-report-completion-report-... and the agent chat floods.
+            if is_completion_report_request_id(request_id):
+                return
             mark_work_completed_unreported(agent_id, request_id, session_key=session_key, reason=reason)
             send_completion_report_request(agent_id, {
                 "kind": "completed-unreported",
@@ -2418,7 +2439,7 @@ def send_completion_report_request(agent_id: str, debt: dict[str, Any]) -> None:
     agent = next((a for a in AGENTS if a["id"] == agent_id), None)
     if not agent:
         return
-    original_request_id = str(debt.get("requestId") or "")
+    original_request_id = completion_report_base_request_id(str(debt.get("requestId") or ""))
     session_key = str(debt.get("sessionKey") or "") or observer_chat_session_key(agent_id)
     request_id = f"completion-report-{original_request_id or str(uuid.uuid4())}"
     nudge_key = f"completion-report:{agent_id}:{original_request_id or session_key or 'unknown'}"
